@@ -1,0 +1,13 @@
+{  
+  "description": "Shows external IP address using the free thisipcan.cyou service, refreshes every 2 mins and notifies if changed.",
+  "gettext-domain": "external-ip-notification",
+  "name": "Show External IP (thisipcan.cyou)",
+  "shell-version": [
+    "40",
+    "41",
+    "42"
+  ],
+  "url": "https://github.com/cwittenberg/thisipcan.cyou",
+  "uuid": "external-ip-extension@ipcan.cyou",
+  "version": 2
+}
