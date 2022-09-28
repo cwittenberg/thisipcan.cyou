@@ -159,10 +159,6 @@ function disable() {
     messageTray = null;
 
     // clear UI widgets
-    // Remove the added button from panel
-    // bugfix: remove panelButton before setting to null
-    Main.panel._rightBox.remove_child(panelButton);
-
     panelButton = null;
     panelButtonText = null;
 
@@ -170,5 +166,8 @@ function disable() {
     if (sourceLoopID) {
         GLib.Source.remove(sourceLoopID);
         sourceLoopID = null;
-    }    
+    }
+
+    // Remove the added button from panel
+    Main.panel._rightBox.remove_child(panelButton);
 }
