@@ -158,12 +158,17 @@ function disable() {
     // clear messagetray
     messageTray = null;
 
+    // clear UI widgets
+    // Remove the added button from panel
+    // bugfix: remove panelButton before setting to null
+    Main.panel._rightBox.remove_child(panelButton);
+
+    panelButton = null;
+    panelButtonText = null;
+
     // Remove timer loop altogether
     if (sourceLoopID) {
         GLib.Source.remove(sourceLoopID);
         sourceLoopID = null;
-    }
-
-    // Remove the added button from panel
-    Main.panel._rightBox.remove_child(panelButton);
+    }    
 }
