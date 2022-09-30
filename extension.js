@@ -43,7 +43,36 @@ let messageTray = null;
 let currentIP = ""; // stores previously detected external ip
 let disabled = false; // stop processing if extension is disabled
 let elapsed = 0; // time elapsed before next external ip check
-let timeout = 60 * 2; // be friendly, refresh every 2 mins.
+let timeout = 60 * 10; // be friendly, refresh every 10 mins.
+
+// Network event monitoring
+const GnomeSession = imports.misc.gnomeSession;
+let network_monitor = Gio.network_monitor_get_default();
+let presence = new GnomeSession.Presence((proxy, error) => {
+    _onNetworkStatusChanged(proxy.status);
+});
+let presence_connection = presence.connectSignal('StatusChanged', (proxy, senderName, [status]) => {
+    _onNetworkStatusChanged(status);
+});
+let network_monitor_connection = network_monitor.connect('network-changed', _onNetworkStatusChanged);
+
+// In case of a network event, inquire external IP.
+function _onNetworkStatusChanged(status=null) {
+    let _idle = false;
+
+    if (status == GnomeSession.PresenceStatus.IDLE) {
+        let _idle = true;
+    }
+
+    log("Network event has been triggered. Re-check ext. IP");
+
+    ipPromise().then(result => {
+        // no need
+    }).catch(e => {
+        log('Error occured in ipPromise');        
+    });    
+}
+
 
 // returns raw HTTP response
 function httpRequest(url, type = 'GET') {
@@ -111,18 +140,25 @@ function refreshIP() {
 // wait until time elapsed, to be friendly to external ip url
 function timer() {
     if (!disabled) {
-        if (elapsed >= timeout) {
-            elapsed = 0;
+        sourceLoopID = Mainloop.timeout_add_seconds(timeout, function() {            
+            ipPromise().then(result => {
+                //reinvoke itself                    
+                timer();
 
-            refreshIP();
-        } else {
-            elapsed++;
-        }
-
-        sourceLoopID = Mainloop.timeout_add_seconds(1, function() {
-            return timer();
+            }).catch(e => {
+                log('Error occured in ipPromise');                
+                timer();
+            });
         });
     }    
+}
+
+// Run polling procedure completely async 
+function ipPromise() {
+    return new Promise((resolve, reject) => {
+        refreshIP();
+        resolve('success');        
+    });
 }
 
 function init() {}
@@ -159,6 +195,10 @@ function disable() {
     messageTray = null;
 
     // clear UI widgets
+    // Remove the added button from panel
+    // bugfix: remove panelButton before setting to null
+    Main.panel._rightBox.remove_child(panelButton);
+
     panelButton = null;
     panelButtonText = null;
 
@@ -166,8 +206,5 @@ function disable() {
     if (sourceLoopID) {
         GLib.Source.remove(sourceLoopID);
         sourceLoopID = null;
-    }
-
-    // Remove the added button from panel
-    Main.panel._rightBox.remove_child(panelButton);
+    }    
 }
