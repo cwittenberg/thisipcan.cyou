@@ -1,14 +1,10 @@
-/* Add your custom extension styling here */
-
 .cdt-text { font-size: 1.2em; }
-
-/*
-.cdt-icon { margin-right: 0.6em; font-size: 0.1em; }
-*/
 
 .notifyIcon {
     background-image: url("img/ip.svg");
-    background-size: 20px;
-    height: 20px;
-    width: 20px;
+    background-size: 17px;
+    height: 17px;    
+    background-position: 0px 8px;
+    text-align: right;   
+    padding-left:25px;   
 }

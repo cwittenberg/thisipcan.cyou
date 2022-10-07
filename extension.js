@@ -24,19 +24,28 @@ const {
     Clutter,
     Gio,
     Soup,
-    GLib
+    GLib,
+    GObject
 } = imports.gi;
 const Mainloop = imports.mainloop;
 const Main = imports.ui.main;
 const Util = imports.misc.util;
 const MessageTray = imports.ui.messageTray;
+const PopupMenu = imports.ui.popupMenu;
+const PanelMenu = imports.ui.panelMenu;
 
-const thisExtensionDir = GLib.get_home_dir() + '/.local/share/gnome-shell/extensions/external-ip-extension@ipcan.cyou';
+const ExtensionUtils = imports.misc.extensionUtils;
+const Me = ExtensionUtils.getCurrentExtension();
+const thisExtensionDir = Me.path;
 const iconLocation = thisExtensionDir + '/img/ip.svg';
-const extIpService = 'http://thisipcan.cyou';
 
+const extIpService = 'https://thisipcan.cyou/json';
+const extCountryFlagService = 'https://thisipcan.cyou/flag-<countrycode>';
+
+let debug = false;
 let panelButton = null;
 let panelButtonText = null;
+let panelIcon = null;
 let sourceLoopID = null;
 let messageTray = null;
 
@@ -44,35 +53,44 @@ let currentIP = ""; // stores previously detected external ip
 let disabled = false; // stop processing if extension is disabled
 let elapsed = 0; // time elapsed before next external ip check
 let timeout = 60 * 10; // be friendly, refresh every 10 mins.
+let minTimeBetweenChecks = 4; //in seconds, to avoid network event induced IP re-checks occur too frequent
 
 // Network event monitoring
 const GnomeSession = imports.misc.gnomeSession;
-let network_monitor = Gio.network_monitor_get_default();
-let presence = new GnomeSession.Presence((proxy, error) => {
-    _onNetworkStatusChanged(proxy.status);
-});
-let presence_connection = presence.connectSignal('StatusChanged', (proxy, senderName, [status]) => {
-    _onNetworkStatusChanged(status);
-});
-let network_monitor_connection = network_monitor.connect('network-changed', _onNetworkStatusChanged);
+let network_monitor = null;
+let presence = null;
+let presence_connection = null;
+let network_monitor_connection = null;
+
+let networkEventRefreshTimeout = 4;
+let networkEventRefreshLoopID = null;
 
 // In case of a network event, inquire external IP.
 function _onNetworkStatusChanged(status=null) {
-    let _idle = false;
+    /*let _idle = false;
 
     if (status == GnomeSession.PresenceStatus.IDLE) {
         let _idle = true;
+    }*/
+
+
+    if(status != null) {
+        lg("Network event has been triggered. Re-check ext. IP");
+        
+        if(status.get_network_available()) {
+            lg("Network is now available... rechecking IP, give it a few secs");
+                         
+            networkEventRefreshLoopID = Mainloop.timeout_add_seconds(networkEventRefreshTimeout, function() {         
+                lg("Network event triggered refresh");
+                refreshIP();
+            });   
+        }
     }
-
-    log("Network event has been triggered. Re-check ext. IP");
-
-    ipPromise().then(result => {
-        // no need
-    }).catch(e => {
-        log('Error occured in ipPromise');        
-    });    
 }
 
+function lg(s) {
+    if (debug == true) log("===" + Me.metadata['gettext-domain'] + "===>" + s);
+}
 
 // returns raw HTTP response
 function httpRequest(url, type = 'GET') {
@@ -86,7 +104,7 @@ function httpRequest(url, type = 'GET') {
         try {
             out = message['response-body'].data
         } catch (error) {
-            log(error);
+            lg(error);
         }
     }
     return out;
@@ -117,65 +135,191 @@ function notify(title, msg) {
     source.showNotification(notification);
 }
 
+function getFlagUrl(countryCode) {
+    return extCountryFlagService.replace("<countrycode>", countryCode.toLowerCase());
+}
+
 // gets external IP and updates label in toolbar
 // if changed, show GNOME notification
+let lastCheck = 0;
+let locationIP = null; 
 function refreshIP() {
-    let ipAddress = httpRequest(extIpService);
 
-    if (currentIP != "" && currentIP != ipAddress) {
-        //new ip address found.
-        log('Note: External IP address has been changed into ' + ipAddress + ", trigger GNOME notification")        
-        notify('External IP Address', 'Has been changed to ' + ipAddress);
+    let t = new Date().getTime();
+    if(t - lastCheck <= minTimeBetweenChecks * 1000)  {        
+        return;
+    } else {
+
+        lastCheck = t;
+        
+        let resp = httpRequest(extIpService);        
+
+        if(resp == null || resp == "") { 
+            lg("Null response received");
+            return;
+        } else {
+            lg("JSON response (" + extIpService + "):");
+            lg(resp);
+        }
+
+        locationIP = JSON.parse(resp);        
+
+        if (currentIP != "" && currentIP != locationIP.ipAddress) {
+            //new ip address found.
+            lg('Note: External IP address has been changed into ' + locationIP.ipAddress + ", trigger GNOME notification")        
+            notify('External IP Address', 'Has been changed to ' + locationIP.ipAddress);
+        }
+
+        currentIP = locationIP.ipAddress;
+
+        lg("New IP: " + currentIP + " - " + locationIP.countryName + " (" + locationIP.countryCode + ")");
+
+        lg(getFlagUrl(locationIP.countryCode));
+
+        panelButton.update(currentIP, locationIP.countryCode);
     }
 
-    currentIP = ipAddress;
-
-    panelButtonText = new St.Label({
-        text: ipAddress,
-        y_align: Clutter.ActorAlign.CENTER,
-    });
-    panelButton.set_child(panelButtonText);
+    return true;
 }
 
 // wait until time elapsed, to be friendly to external ip url
-function timer() {
+function timer() {    
     if (!disabled) {
         sourceLoopID = Mainloop.timeout_add_seconds(timeout, function() {            
             ipPromise().then(result => {
-                //reinvoke itself                    
-                timer();
+                lg('reinvoke');
 
-            }).catch(e => {
-                log('Error occured in ipPromise');                
-                timer();
-            });
+                //reinvoke itself                    
+                timer();                                
+            }).catch(e => {                
+                lg('Error occured in ipPromise');                
+                timer();                             
+            });            
         });
     }    
 }
 
 // Run polling procedure completely async 
 function ipPromise() {
-    return new Promise((resolve, reject) => {
-        refreshIP();
-        resolve('success');        
+    return new Promise((resolve, reject) => {        
+        if(refreshIP()) {
+            resolve("success");
+        } else {
+            reject("error");
+        }
     });
 }
 
 function init() {}
+
+// Download application specific icons from Pushover and cache locally
+// This to prevent unwanted load on Pushover.net
+function getCachedFlag(country) {
+    let iconFileDestination = thisExtensionDir + '/flags/' + country + '.svg';
+
+    const cwd = Gio.File.new_for_path(thisExtensionDir + "/flags/");
+    const newFile = cwd.get_child(country + ".svg");
+
+    // detects if icon is cached (exists)
+    const fileExists = newFile.query_exists(null);
+
+    if (!fileExists) {
+        // download and save in cache folder
+        // do this synchronously to ensure notifications always get a logo
+        let _httpSession = new Soup.SessionSync();
+
+        let url = getFlagUrl(country);
+        let message = Soup.Message.new('GET', url);
+        let responseCode = _httpSession.send_message(message);
+        let out = null;
+        let resp = null;
+        if (responseCode == 200) {
+            try {
+                let bytes = message['response-body'].flatten().get_data();
+                const file = Gio.File.new_for_path(iconFileDestination);
+                const [, etag] = file.replace_contents(bytes, null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null);
+            } catch (e) {
+                lg("Error in cached flag");
+                lg(e);
+            }
+        }
+
+    } else {
+        // icon is readily cached, return from icons folder locally        
+    }
+
+    return iconFileDestination;
+}
+
+let menu=null;
+let btn = null;
+const Indicator = GObject.registerClass(
+    class Indicator extends PanelMenu.Button {              
+        
+        update(ip, country) {                        
+            //cache locally            
+            let flagURL = getCachedFlag(country.toLowerCase());            
+
+            btn.set_style('background-image: url("' + flagURL + '");');
+            btn.set_label(ip);     
+        }
+
+        _init(ip="", country="gb") {
+            var that = this;
+            super._init(0.0, _(Me.metadata['name']));
+            
+            btn = new St.Button();            
+            btn.set_style_class_name("notifyIcon");
+            
+            this.update(ip, country);
+                
+            this.connect('button-press-event', this._onButtonClicked);
+            btn.connect('button-press-event', this._onButtonClicked);
+
+            this.add_child(btn);                        
+
+            menu = this.menu;
+
+            let settingsItem = new PopupMenu.PopupMenuItem(_('Settings'));
+            settingsItem.connect('activate', (item, event) => {
+                ExtensionUtils.openPrefs();
+
+                return Clutter.EVENT_PROPAGATE;
+            });
+            menu.addMenuItem(settingsItem);       
+
+        }
+
+        _onButtonClicked(obj, e) {            
+            let container = obj;
+            if(obj.menu == null) {
+                //left button                
+                obj = obj.get_parent();
+            }            
+
+            //re-add to reflect change in separatormenuitem
+            obj.menu.removeAll();                        
+            let copyBtn = new PopupMenu.PopupMenuItem(_("Copy IP"));
+            copyBtn.connect('activate', (item, event) => {
+                //copy IP to clipboard
+                St.Clipboard.get_default().set_text(St.ClipboardType.CLIPBOARD, locationIP.ipAddress);
+
+                return Clutter.EVENT_PROPAGATE;
+            });
+            obj.menu.addMenuItem(copyBtn);                                    
+            obj.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem(_(locationIP.countryName + " (" + locationIP.countryCode + "), " + _(locationIP.cityName))));            
+            
+            obj.menu.toggle();            
+        }
+    }
+);
 
 function enable() {
     disabled = false;
 
     // Prepare UI
     messageTray = new MessageTray.MessageTray()    
-    panelButton = new St.Bin({
-        style_class: "panel-button",
-    });
-    let panelButtonText = new St.Label({
-        text: "IP: <checking>",
-        y_align: Clutter.ActorAlign.CENTER,
-    });
-    panelButton.set_child(panelButtonText);
+    panelButton = new Indicator("");
 
     // After enabling, immediately get ip
     refreshIP();
@@ -183,8 +327,19 @@ function enable() {
     // Enable timer
     timer();
 
-    // Add the button to the panel
-    Main.panel._rightBox.insert_child_at_index(panelButton, 0);
+    // Add the button to the panel    
+    let uuid = Me.metadata['name'].uuid;        
+    Main.panel.addToStatusArea(uuid, panelButton, 0, 'right');    
+
+    // Enable network event monitoring
+    network_monitor = Gio.network_monitor_get_default();
+    presence = new GnomeSession.Presence((proxy, error) => {
+        _onNetworkStatusChanged(proxy.status);
+    });    
+    presence_connection = presence.connectSignal('StatusChanged', (proxy, senderName, [status]) => {
+        _onNetworkStatusChanged(status);
+    });    
+    network_monitor_connection = network_monitor.connect('network-changed', _onNetworkStatusChanged);
 }
 
 function disable() {
@@ -196,11 +351,28 @@ function disable() {
 
     // clear UI widgets
     // Remove the added button from panel
-    // bugfix: remove panelButton before setting to null
-    Main.panel._rightBox.remove_child(panelButton);
+    // bugfix: remove panelButton before setting to null    
+    Main.panel.remove_child(panelButton);
+    panelButton.destroy();
 
     panelButton = null;
     panelButtonText = null;
+
+    btn=null;
+
+    locationIP=null;
+
+    // Cleanup network monitor properly
+    presence.disconnectSignal(presence_connection);    
+    network_monitor.disconnect(network_monitor_connection);
+    network_monitor = null;
+    presence = null;
+
+    // Remove timer for network events
+    if (networkEventRefreshLoopID) {
+        GLib.Source.remove(networkEventRefreshLoopID);
+        networkEventRefreshLoopID = null;
+    }
 
     // Remove timer loop altogether
     if (sourceLoopID) {
