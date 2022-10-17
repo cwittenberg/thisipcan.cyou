@@ -37,9 +37,10 @@ const PanelMenu = imports.ui.panelMenu;
 const ExtensionUtils = imports.misc.extensionUtils;
 const Me = ExtensionUtils.getCurrentExtension();
 const thisExtensionDir = Me.path;
-const iconLocation = thisExtensionDir + '/img/ip.svg';
 
 const extIpService = 'https://thisipcan.cyou/json';
+const extIpServiceASN = 'https://thisipcan.cyou/';
+const extIpServiceStaticMap = 'https://staticmap.thisipcan.cyou/';
 const extCountryFlagService = 'https://thisipcan.cyou/flag-<countrycode>';
 
 let debug = false;
@@ -72,7 +73,6 @@ function _onNetworkStatusChanged(status=null) {
     if (status == GnomeSession.PresenceStatus.IDLE) {
         let _idle = true;
     }*/
-
 
     if(status != null) {
         lg("Network event has been triggered. Re-check ext. IP");
@@ -116,11 +116,6 @@ function httpRequest(url, type = 'GET') {
 // - added icon specifics. 
 // - added global messagetray destination.
 function notify(title, msg) {
-    const file = Gio.File.new_for_path(iconLocation);
-    const icon = new Gio.FileIcon({
-        file
-    });
-
     let source = new MessageTray.Source(title);
     
     //ensure notification is added to GNOME message tray
@@ -128,7 +123,7 @@ function notify(title, msg) {
 
     messageTray.add(source);
     let notification = new MessageTray.Notification(source, title, msg, {
-        gicon: icon,
+        gicon: getIcon("ip.svg"),
         bannerMarkup: true
     });
     notification.setTransient(false);
@@ -212,9 +207,49 @@ function ipPromise() {
 
 function init() {}
 
-// Download application specific icons from Pushover and cache locally
-// This to prevent unwanted load on Pushover.net
+// Download application specific flags and cache locally
+function getCachedMap(lat,lon) {    
+    let mapFileDestination = thisExtensionDir + '/maps/' + lat + '_' + lon + '.svg';
+
+    const cwd = Gio.File.new_for_path(thisExtensionDir + "/maps/");
+    const newFile = cwd.get_child(lat + '_' + lon + ".svg");
+
+    // detects if icon is cached (exists)
+    const fileExists = newFile.query_exists(null);
+
+    if (!fileExists) {
+        // download and save in cache folder
+        // do this synchronously to ensure notifications always get a logo
+        let _httpSession = new Soup.SessionSync();
+
+        let url = extIpServiceStaticMap + "?lat=" + lat + "&lon=" + lon + "&f=SVG&marker=12&w=250&h=150";
+        
+        let message = Soup.Message.new('GET', url);
+        let responseCode = _httpSession.send_message(message);
+        let out = null;
+        let resp = null;
+        if (responseCode == 200) {
+            try {
+                let bytes = message['response-body'].flatten().get_data();
+                const file = Gio.File.new_for_path(mapFileDestination);
+                const [, etag] = file.replace_contents(bytes, null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null);
+            } catch (e) {
+                lg("Error in cached flag");
+                lg(e);
+            }
+        }
+
+    } else {
+        // icon is readily cached, return from icons folder locally        
+    }
+
+    return mapFileDestination;
+}
+
+// Download application specific flags and cache locally
 function getCachedFlag(country) {
+    country = country.toLowerCase();
+
     let iconFileDestination = thisExtensionDir + '/flags/' + country + '.svg';
 
     const cwd = Gio.File.new_for_path(thisExtensionDir + "/flags/");
@@ -251,11 +286,23 @@ function getCachedFlag(country) {
     return iconFileDestination;
 }
 
+// Returns SVG as gicon
+function getIcon(fileName, noPrefix=false) {
+    let prefix = "";
+    if(noPrefix == false) {
+        prefix = thisExtensionDir + "/img/";
+    }
+
+    let file = Gio.File.new_for_path(prefix + fileName);
+    return icon = new Gio.FileIcon({
+        file
+    });
+}
+
 let menu=null;
 let btn = null;
 const Indicator = GObject.registerClass(
-    class Indicator extends PanelMenu.Button {              
-        
+    class Indicator extends PanelMenu.Button {                             
         update(ip, country) {                        
             //cache locally            
             let flagURL = getCachedFlag(country.toLowerCase());            
@@ -277,18 +324,7 @@ const Indicator = GObject.registerClass(
             btn.connect('button-press-event', this._onButtonClicked);
 
             this.add_child(btn);                        
-
-            menu = this.menu;
-
-            let settingsItem = new PopupMenu.PopupMenuItem(_('Settings'));
-            settingsItem.connect('activate', (item, event) => {
-                ExtensionUtils.openPrefs();
-
-                return Clutter.EVENT_PROPAGATE;
-            });
-            menu.addMenuItem(settingsItem);       
-
-        }
+        }        
 
         _onButtonClicked(obj, e) {            
             let container = obj;
@@ -299,16 +335,66 @@ const Indicator = GObject.registerClass(
 
             //re-add to reflect change in separatormenuitem
             obj.menu.removeAll();                        
-            let copyBtn = new PopupMenu.PopupMenuItem(_("Copy IP"));
-            copyBtn.connect('activate', (item, event) => {
-                //copy IP to clipboard
-                St.Clipboard.get_default().set_text(St.ClipboardType.CLIPBOARD, locationIP.ipAddress);
+           
+            obj.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem(_("Click to copy to clipboard")));                 
 
+            let copyTextFunction = function(item, event) {                                
+                St.Clipboard.get_default().set_text(St.ClipboardType.CLIPBOARD, item.label.text);
                 return Clutter.EVENT_PROPAGATE;
-            });
-            obj.menu.addMenuItem(copyBtn);                                    
-            obj.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem(_(locationIP.countryName + " (" + locationIP.countryCode + "), " + _(locationIP.cityName))));            
+            };
+                                    
+            let copyBtn = new PopupMenu.PopupImageMenuItem(_(locationIP.ipAddress), getIcon("ip_ed.svg"), { style_class: 'ipMenuItem'});
+            copyBtn.connect('activate', copyTextFunction);
+            obj.menu.addMenuItem(copyBtn);                                                              
             
+            //retrieve ASN / org details            
+            let asnText = httpRequest(extIpServiceASN, "GET");
+            if(asnText != "" && asnText != null) {
+                let asn = JSON.parse(asnText);
+                
+                if("hostname" in asn) {
+                    let hostBtn = new PopupMenu.PopupImageMenuItem(_(asn.hostname), getIcon("host.svg"), {});
+                    hostBtn.connect('activate', copyTextFunction);
+                    obj.menu.addMenuItem(hostBtn);           
+                }
+
+                if("org" in asn) {                       
+                    let orgBtn = new PopupMenu.PopupImageMenuItem(_(asn.org), getIcon("company.svg"), {});
+                    orgBtn.connect('activate', copyTextFunction);
+                    obj.menu.addMenuItem(orgBtn);           
+                }
+
+                if("timezone" in asn) {           
+                    let tzBtn = new PopupMenu.PopupImageMenuItem(_(asn.timezone), getIcon("timezone.svg"), {});
+                    tzBtn.connect('activate', copyTextFunction);
+                    obj.menu.addMenuItem(tzBtn);           
+                }
+            }
+
+            let flagIcon = getIcon(getCachedFlag(locationIP.countryCode), true);
+            let countryBtn = new PopupMenu.PopupImageMenuItem(_(locationIP.countryName + " (" + locationIP.countryCode + "), " + locationIP.cityName), flagIcon, {});
+            countryBtn.connect('activate', copyTextFunction);
+            obj.menu.addMenuItem(countryBtn);         
+
+            if("longitude" in locationIP && "latitude" in locationIP) {
+                //show map, clicking on it will open google maps with a pin
+
+                let mapImageBtn = new PopupMenu.PopupMenuItem(_(""), { style_class: 'mapMenuItem' });                            
+                //https://tyler-demo.herokuapp.com/?lat=" + locationIP.latitude + "&lon=" + locationIP.longitude + "&zoom=11&width=200&height=150
+                mapImageBtn.set_style("background-image: url('" + getCachedMap(locationIP.latitude, locationIP.longitude) + "')");
+
+                let mapsUrl = 'https://maps.google.com/maps?q=' + String(locationIP.latitude) + ',' + String(locationIP.longitude);
+                
+                mapImageBtn.connect('activate', function(item, event) {           
+                    log(mapsUrl);
+                    GLib.spawn_command_line_async("xdg-open \"" + mapsUrl + "\"");
+
+                    return Clutter.EVENT_PROPAGATE;
+                });
+
+                obj.menu.addMenuItem(mapImageBtn);   
+            }
+
             obj.menu.toggle();            
         }
     }
@@ -328,7 +414,7 @@ function enable() {
     timer();
 
     // Add the button to the panel    
-    let uuid = Me.metadata['name'].uuid;        
+    let uuid = Me.metadata.uuid;       
     Main.panel.addToStatusArea(uuid, panelButton, 0, 'right');    
 
     // Enable network event monitoring
