@@ -3,14 +3,12 @@ This GNOME extension displays your external IP in the Toolbar and sends a system
 
 The solution watches for local network events and uses the free thisipcan.cyou service. It also refreshes every few mins to check if the external IP has been changed. This extension is handy to quickly see your public IP and is especially handy for those who work at different locations or with different VPNs. The country's public IP is also displayed with a small flag.
 
-Notifications when changed:
+![image](https://user-images.githubusercontent.com/4825211/196243623-3d998bf2-f0ed-418d-a43c-6bdfae1314c3.png)
 
-[<img src="https://user-images.githubusercontent.com/4825211/194649944-fc0ab2ae-2fcd-44eb-83b7-0cf586bbb4fc.png" width="55%"/>](notification.png)
-
-Clicking the IP in the top bar allows you to copy it and see location/city details:
-
-[<img src="https://user-images.githubusercontent.com/4825211/194650537-8a02577e-a5c7-477e-a431-91c6b2647d83.png" width="55%"/>](click.png)
-
+Screenshot above: 
+- Get notified when your public IP is changed. 
+- Clicking the menu allows you to quickly copy the IP and other information to your clipboard.
+- Clicking the map will open Google Maps to the location found.
 
 # Installation
 After completing one of the installation methods below, restart GNOME Shell (Xorg: Alt+F2, r, Enter - Wayland: log out or reboot) and enable the extension through the gnome-extensions app.
