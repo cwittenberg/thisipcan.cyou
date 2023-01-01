@@ -34,6 +34,8 @@ const MessageTray = imports.ui.messageTray;
 const PopupMenu = imports.ui.popupMenu;
 const PanelMenu = imports.ui.panelMenu;
 
+notification_msg_sources = new Set();   // stores IDs of previously displayed notifications (for providing a handle to destruction)
+
 const ExtensionUtils = imports.misc.extensionUtils;
 const Me = ExtensionUtils.getCurrentExtension();
 const thisExtensionDir = Me.path;
@@ -44,7 +46,6 @@ const extIpServiceStaticMap = 'https://staticmap.thisipcan.cyou/';
 const extCountryFlagService = 'https://thisipcan.cyou/flag-<countrycode>';
 
 let debug = false;
-let panelButton = null;
 let panelButtonText = null;
 let panelIcon = null;
 let sourceLoopID = null;
@@ -66,15 +67,149 @@ let network_monitor_connection = null;
 let networkEventRefreshTimeout = 4;
 let networkEventRefreshLoopID = null;
 
-// In case of a network event, inquire external IP.
-function _onNetworkStatusChanged(status=null) {
-    /*let _idle = false;
+let isIdle = false;
+
+let menu=null;
+let btn = null;
+let panelButton = null;
+let popup_icon = null;
+
+let Indicator = GObject.registerClass(
+    class Indicator extends PanelMenu.Button {                        
+        update(ip, country) {                        
+            //cache locally            
+            let flagURL = getCachedFlag(country.toLowerCase());            
+
+            btn.set_style('background-image: url("' + flagURL + '");');
+            btn.set_label(ip);     
+        }
+
+        _init(ip="", country="gb") {
+            var that = this;
+            super._init(0.0, _(Me.metadata['name']));
+            
+            btn = new St.Button();            
+            btn.set_style_class_name("notifyIcon");
+            
+            this.update(ip, country);
+                
+            this.connect('button-press-event', this._onButtonClicked);
+            btn.connect('button-press-event', this._onButtonClicked);
+
+            this.add_child(btn);                        
+        }        
+
+        _onButtonClicked(obj, e) {            
+            let container = obj;
+            if(obj.menu == null) {
+                //left button                
+                obj = obj.get_parent();
+            }            
+
+            //re-add to reflect change in separatormenuitem
+            obj.menu.removeAll();                        
+           
+            obj.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem(_("Click to copy to clipboard")));                 
+
+            let copyTextFunction = function(item, event) {                                
+                St.Clipboard.get_default().set_text(St.ClipboardType.CLIPBOARD, item.label.text);
+                return Clutter.EVENT_PROPAGATE;
+            };
+                                    
+            let copyBtn = new PopupMenu.PopupImageMenuItem(_(locationIP.ipAddress), getIcon("ip_ed.svg"), { style_class: 'ipMenuItem'});
+            copyBtn.connect('activate', copyTextFunction);
+            obj.menu.addMenuItem(copyBtn);                                                              
+            
+            //retrieve ASN / org details            
+            let asnText = httpRequest(extIpServiceASN, "GET");
+            if(asnText != "" && asnText != null) {
+                let asn = JSON.parse(asnText);
+                
+                if("hostname" in asn) {
+                    let hostBtn = new PopupMenu.PopupImageMenuItem(_(asn.hostname), getIcon("host.svg"), {});
+                    hostBtn.connect('activate', copyTextFunction);
+                    obj.menu.addMenuItem(hostBtn);           
+                }
+
+                if("org" in asn) {                       
+                    let orgBtn = new PopupMenu.PopupImageMenuItem(_(asn.org), getIcon("company.svg"), {});
+                    orgBtn.connect('activate', copyTextFunction);
+                    obj.menu.addMenuItem(orgBtn);           
+                }
+
+                if("timezone" in asn) {           
+                    let tzBtn = new PopupMenu.PopupImageMenuItem(_(asn.timezone), getIcon("timezone.svg"), {});
+                    tzBtn.connect('activate', copyTextFunction);
+                    obj.menu.addMenuItem(tzBtn);           
+                }
+            }
+
+            let flagIcon = getIcon(getCachedFlag(locationIP.countryCode), true);
+            let countryBtn = new PopupMenu.PopupImageMenuItem(_(locationIP.countryName + " (" + locationIP.countryCode + "), " + locationIP.cityName), flagIcon, {});
+            countryBtn.connect('activate', copyTextFunction);
+            obj.menu.addMenuItem(countryBtn);         
+
+            if("longitude" in locationIP && "latitude" in locationIP) {
+                //show map, clicking on it will open google maps with a pin
+
+                let mapImageBtn = new PopupMenu.PopupMenuItem(_(""), { style_class: 'mapMenuItem' });                                            
+                mapImageBtn.set_style("background-image: url('" + getCachedMap(locationIP.latitude, locationIP.longitude) + "')");
+
+                let mapsUrl = 'https://maps.google.com/maps?q=' + String(locationIP.latitude) + ',' + String(locationIP.longitude);
+                
+                mapImageBtn.connect('activate', function(item, event) {           
+                    log(mapsUrl);
+                    GLib.spawn_command_line_async("xdg-open \"" + mapsUrl + "\"");
+
+                    return Clutter.EVENT_PROPAGATE;
+                });
+
+                obj.menu.addMenuItem(mapImageBtn);   
+            }
+
+            obj.menu.toggle();            
+        }
+    }
+);
+
+
+// In case of GNOME event
+function _onStatusChanged(presence, status) {
+    let backFromSleep = false;
+
+    lg("Gnome status changed");
 
     if (status == GnomeSession.PresenceStatus.IDLE) {
-        let _idle = true;
-    }*/
+        isIdle = true;        
 
-    if(status != null) {
+        lg("Disabling network monitor");
+        networkMonitorDisable();
+
+    } else {        
+        if(isIdle) {
+            backFromSleep = true;            
+        }
+
+        isIdle = false;
+        
+        lg("Enabling network monitor");
+        networkMonitorEnable();
+    }
+
+    if(backFromSleep) {
+        lg("Device unlocked/awoken");
+        if (sourceLoopID) {
+            GLib.Source.remove(sourceLoopID);
+            sourceLoopID = null;
+        }  
+
+        timer();
+    }
+}
+
+// In case of a network event, inquire external IP.
+function _onNetworkStatusChanged(status=null) {        
+    if(status != null && !isIdle) {        
         lg("Network event has been triggered. Re-check ext. IP");
         
         if(status.get_network_available()) {
@@ -115,18 +250,26 @@ function httpRequest(url, type = 'GET') {
 // modified: 
 // - added icon specifics. 
 // - added global messagetray destination.
-function notify(title, msg) {
-    let source = new MessageTray.Source(title);
+// - bugfix: added fix for missing icon specification in Source constructor, this caused occassional crashes to Logout
+// - moved popup_icon to a once-initialized variable to prevent unnecessary reloading.
+function notify(title, msg) {    
+    let source = new MessageTray.Source(title, "img/ip.svg");
+
+    notification_msg_sources.add(source);
     
     //ensure notification is added to GNOME message tray
     Main.messageTray.add(source);
 
-    messageTray.add(source);
-    let notification = new MessageTray.Notification(source, title, msg, {
-        gicon: getIcon("ip.svg"),
-        bannerMarkup: true
+    let notification = new MessageTray.Notification(source, title, msg, {        
+        bannerMarkup: true,
+        gicon: popup_icon
+    });          
+    
+    //set to destroy messages in stack also
+    notification.connect('destroy', (destroyed_source) => {
+        notification_msg_sources.delete(destroyed_source.source);
     });
-    notification.setTransient(false);
+
     source.showNotification(notification);
 }
 
@@ -162,7 +305,12 @@ function refreshIP() {
         if (currentIP != "" && currentIP != locationIP.ipAddress) {
             //new ip address found.
             lg('Note: External IP address has been changed into ' + locationIP.ipAddress + ", trigger GNOME notification")        
-            notify('External IP Address', 'Has been changed to ' + locationIP.ipAddress);
+
+            try {
+                notify('External IP Address', 'Has been changed to ' + locationIP.ipAddress);
+            } catch(err) {
+                lg(err);
+            }
         }
 
         currentIP = locationIP.ipAddress;
@@ -171,7 +319,9 @@ function refreshIP() {
 
         lg(getFlagUrl(locationIP.countryCode));
 
-        panelButton.update(currentIP, locationIP.countryCode);
+        if(panelButton != null) {            
+            panelButton.update(currentIP, locationIP.countryCode);
+        }
     }
 
     return true;
@@ -179,7 +329,7 @@ function refreshIP() {
 
 // wait until time elapsed, to be friendly to external ip url
 function timer() {    
-    if (!disabled) {
+    if (!disabled && !isIdle) {
         sourceLoopID = Mainloop.timeout_add_seconds(timeout, function() {            
             ipPromise().then(result => {
                 lg('reinvoke');
@@ -299,140 +449,70 @@ function getIcon(fileName, noPrefix=false) {
     });
 }
 
-let menu=null;
-let btn = null;
-const Indicator = GObject.registerClass(
-    class Indicator extends PanelMenu.Button {                             
-        update(ip, country) {                        
-            //cache locally            
-            let flagURL = getCachedFlag(country.toLowerCase());            
-
-            btn.set_style('background-image: url("' + flagURL + '");');
-            btn.set_label(ip);     
-        }
-
-        _init(ip="", country="gb") {
-            var that = this;
-            super._init(0.0, _(Me.metadata['name']));
-            
-            btn = new St.Button();            
-            btn.set_style_class_name("notifyIcon");
-            
-            this.update(ip, country);
-                
-            this.connect('button-press-event', this._onButtonClicked);
-            btn.connect('button-press-event', this._onButtonClicked);
-
-            this.add_child(btn);                        
-        }        
-
-        _onButtonClicked(obj, e) {            
-            let container = obj;
-            if(obj.menu == null) {
-                //left button                
-                obj = obj.get_parent();
-            }            
-
-            //re-add to reflect change in separatormenuitem
-            obj.menu.removeAll();                        
-           
-            obj.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem(_("Click to copy to clipboard")));                 
-
-            let copyTextFunction = function(item, event) {                                
-                St.Clipboard.get_default().set_text(St.ClipboardType.CLIPBOARD, item.label.text);
-                return Clutter.EVENT_PROPAGATE;
-            };
-                                    
-            let copyBtn = new PopupMenu.PopupImageMenuItem(_(locationIP.ipAddress), getIcon("ip_ed.svg"), { style_class: 'ipMenuItem'});
-            copyBtn.connect('activate', copyTextFunction);
-            obj.menu.addMenuItem(copyBtn);                                                              
-            
-            //retrieve ASN / org details            
-            let asnText = httpRequest(extIpServiceASN, "GET");
-            if(asnText != "" && asnText != null) {
-                let asn = JSON.parse(asnText);
-                
-                if("hostname" in asn) {
-                    let hostBtn = new PopupMenu.PopupImageMenuItem(_(asn.hostname), getIcon("host.svg"), {});
-                    hostBtn.connect('activate', copyTextFunction);
-                    obj.menu.addMenuItem(hostBtn);           
-                }
-
-                if("org" in asn) {                       
-                    let orgBtn = new PopupMenu.PopupImageMenuItem(_(asn.org), getIcon("company.svg"), {});
-                    orgBtn.connect('activate', copyTextFunction);
-                    obj.menu.addMenuItem(orgBtn);           
-                }
-
-                if("timezone" in asn) {           
-                    let tzBtn = new PopupMenu.PopupImageMenuItem(_(asn.timezone), getIcon("timezone.svg"), {});
-                    tzBtn.connect('activate', copyTextFunction);
-                    obj.menu.addMenuItem(tzBtn);           
-                }
-            }
-
-            let flagIcon = getIcon(getCachedFlag(locationIP.countryCode), true);
-            let countryBtn = new PopupMenu.PopupImageMenuItem(_(locationIP.countryName + " (" + locationIP.countryCode + "), " + locationIP.cityName), flagIcon, {});
-            countryBtn.connect('activate', copyTextFunction);
-            obj.menu.addMenuItem(countryBtn);         
-
-            if("longitude" in locationIP && "latitude" in locationIP) {
-                //show map, clicking on it will open google maps with a pin
-
-                let mapImageBtn = new PopupMenu.PopupMenuItem(_(""), { style_class: 'mapMenuItem' });                            
-                //https://tyler-demo.herokuapp.com/?lat=" + locationIP.latitude + "&lon=" + locationIP.longitude + "&zoom=11&width=200&height=150
-                mapImageBtn.set_style("background-image: url('" + getCachedMap(locationIP.latitude, locationIP.longitude) + "')");
-
-                let mapsUrl = 'https://maps.google.com/maps?q=' + String(locationIP.latitude) + ',' + String(locationIP.longitude);
-                
-                mapImageBtn.connect('activate', function(item, event) {           
-                    log(mapsUrl);
-                    GLib.spawn_command_line_async("xdg-open \"" + mapsUrl + "\"");
-
-                    return Clutter.EVENT_PROPAGATE;
-                });
-
-                obj.menu.addMenuItem(mapImageBtn);   
-            }
-
-            obj.menu.toggle();            
-        }
-    }
-);
-
 function enable() {
     disabled = false;
 
+    // Initialize icon once to prevent unnecessary reloading, unload in disable.
+    popup_icon = getIcon("ip.svg");
+
     // Prepare UI
-    messageTray = new MessageTray.MessageTray()    
-    panelButton = new Indicator("");
+    messageTray = new MessageTray.MessageTray()        
+
+    if(panelButton == null) {
+        panelButton = new Indicator();
+    }
+
+    // Add the button to the panel    
+    let uuid = Me.metadata.uuid;       
+    Main.panel.addToStatusArea(uuid, panelButton, 0, 'right');    
+    
+    presence = new GnomeSession.Presence((proxy, error) => {
+        //_onNetworkStatusChanged(proxy.status);
+        _onStatusChanged(proxy.status);
+    });    
+    presence_connection = presence.connectSignal('StatusChanged', (proxy, senderName, [status]) => {
+        //_onNetworkStatusChanged(status);
+        _onStatusChanged(status);
+    });  
+
+    networkMonitorEnable();
 
     // After enabling, immediately get ip
     refreshIP();
 
     // Enable timer
     timer();
+}
 
-    // Add the button to the panel    
-    let uuid = Me.metadata.uuid;       
-    Main.panel.addToStatusArea(uuid, panelButton, 0, 'right');    
-
+function networkMonitorEnable() {
     // Enable network event monitoring
-    network_monitor = Gio.network_monitor_get_default();
-    presence = new GnomeSession.Presence((proxy, error) => {
-        _onNetworkStatusChanged(proxy.status);
-    });    
-    presence_connection = presence.connectSignal('StatusChanged', (proxy, senderName, [status]) => {
-        _onNetworkStatusChanged(status);
-    });    
+    network_monitor = Gio.network_monitor_get_default();      
     network_monitor_connection = network_monitor.connect('network-changed', _onNetworkStatusChanged);
+}
+
+function networkMonitorDisable() {
+    // Cleanup network monitor properly    
+    network_monitor.disconnect(network_monitor_connection);
+    network_monitor = null;
+
+    // Remove timer for network events
+    if (networkEventRefreshLoopID) {
+        GLib.Source.remove(networkEventRefreshLoopID);
+        networkEventRefreshLoopID = null;
+    }
 }
 
 function disable() {
     // Set to true so if the timer hits, stop.
     disabled = true;
 
-    // clear messagetray
+    // clear messagetray - and any associated remaining sources
+    for(let source of notification_msg_sources) {
+        source.destroy();        
+    }
+
+    popup_icon = null;
+
     messageTray = null;
 
     // clear UI widgets
@@ -448,21 +528,17 @@ function disable() {
 
     locationIP=null;
 
-    // Cleanup network monitor properly
     presence.disconnectSignal(presence_connection);    
-    network_monitor.disconnect(network_monitor_connection);
-    network_monitor = null;
     presence = null;
 
-    // Remove timer for network events
-    if (networkEventRefreshLoopID) {
-        GLib.Source.remove(networkEventRefreshLoopID);
-        networkEventRefreshLoopID = null;
-    }
+    networkMonitorDisable();
 
     // Remove timer loop altogether
     if (sourceLoopID) {
         GLib.Source.remove(sourceLoopID);
         sourceLoopID = null;
     }    
+
+    // Destroy indicator altogether    
+    //Indicator = null;
 }
