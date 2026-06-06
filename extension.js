@@ -1,544 +1,372 @@
 /*
  * Copyright (c) 2022 Christian Wittenberg
+ * GNOME 50 Port
  *
  * thisipcan.cyou gnome extension is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by the
  * Free Software Foundation; either version 3 of the License, or (at your
  * option) any later version.
- *
- * thisipcan.cyou gnome extension is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
- * for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with Gnome Documents; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- *
- * Author:
- * Christian Wittenberg <gnome@ipcan.cyou>
- *
  */
-const {
-    St,
-    Clutter,
-    Gio,
-    Soup,
-    GLib,
-    GObject
-} = imports.gi;
-const Mainloop = imports.mainloop;
-const Main = imports.ui.main;
-const Util = imports.misc.util;
-const MessageTray = imports.ui.messageTray;
-const PopupMenu = imports.ui.popupMenu;
-const PanelMenu = imports.ui.panelMenu;
 
-notification_msg_sources = new Set();   // stores IDs of previously displayed notifications (for providing a handle to destruction)
+import St from 'gi://St';
+import Clutter from 'gi://Clutter';
+import Gio from 'gi://Gio';
+import Soup from 'gi://Soup?version=3.0';
+import GLib from 'gi://GLib';
+import GObject from 'gi://GObject';
 
-const ExtensionUtils = imports.misc.extensionUtils;
-const Me = ExtensionUtils.getCurrentExtension();
-const thisExtensionDir = Me.path;
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as MessageTray from 'resource:///org/gnome/shell/ui/messageTray.js';
+import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
+import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 
-const extIpService = 'https://thisipcan.cyou/json';
-const extIpServiceASN = 'https://thisipcan.cyou/';
-const extIpServiceStaticMap = 'https://staticmap.thisipcan.cyou/';
-const extCountryFlagService = 'https://thisipcan.cyou/flag-<countrycode>';
+import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 
-let debug = false;
-let panelButtonText = null;
-let panelIcon = null;
-let sourceLoopID = null;
-let messageTray = null;
+const extIpService = 'https://ipapi.co/json/';
+const extCountryFlagService = 'https://flagcdn.com/<countrycode>.svg';
 
-let currentIP = ""; // stores previously detected external ip
-let disabled = false; // stop processing if extension is disabled
-let elapsed = 0; // time elapsed before next external ip check
-let timeout = 60 * 10; // be friendly, refresh every 10 mins.
-let minTimeBetweenChecks = 4; //in seconds, to avoid network event induced IP re-checks occur too frequent
-
-// Network event monitoring
-const GnomeSession = imports.misc.gnomeSession;
-let network_monitor = null;
-let presence = null;
-let presence_connection = null;
-let network_monitor_connection = null;
-
-let networkEventRefreshTimeout = 4;
-let networkEventRefreshLoopID = null;
-
-let isIdle = false;
-
-let menu=null;
-let btn = null;
-let panelButton = null;
-let popup_icon = null;
-
-let Indicator = GObject.registerClass(
-    class Indicator extends PanelMenu.Button {                        
-        update(ip, country) {                        
-            //cache locally            
-            let flagURL = getCachedFlag(country.toLowerCase());            
-
-            btn.set_style('background-image: url("' + flagURL + '");');
-            btn.set_label(ip);     
-        }
-
-        _init(ip="", country="gb") {
-            var that = this;
-            super._init(0.0, _(Me.metadata['name']));
+const Indicator = GObject.registerClass(
+    class Indicator extends PanelMenu.Button {
+        _init(ext) {
+            super._init(0.0, ext.metadata.name);
+            this.ext = ext;
             
-            btn = new St.Button();            
-            btn.set_style_class_name("notifyIcon");
+            this.btn = new St.Button();            
+            this.btn.set_style_class_name("notifyIcon");
             
-            this.update(ip, country);
+            this.update("", "un").catch(e => this.ext.lg(e));
                 
-            this.connect('button-press-event', this._onButtonClicked);
-            btn.connect('button-press-event', this._onButtonClicked);
+            this.connect('button-press-event', this._onButtonClicked.bind(this));
+            this.btn.connect('button-press-event', this._onButtonClicked.bind(this));
 
-            this.add_child(btn);                        
+            this.add_child(this.btn);                        
         }        
 
-        _onButtonClicked(obj, e) {            
-            let container = obj;
-            if(obj.menu == null) {
-                //left button                
-                obj = obj.get_parent();
-            }            
+        async update(ip, country) {                        
+            let flagURL = await this.ext.getCachedFlag(country);            
+            this.btn.set_style('background-image: url("file://' + flagURL + '");');
+            this.btn.set_label(ip || "...");     
+        }
 
-            //re-add to reflect change in separatormenuitem
-            obj.menu.removeAll();                        
-           
-            obj.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem(_("Click to copy to clipboard")));                 
-
-            let copyTextFunction = function(item, event) {                                
-                St.Clipboard.get_default().set_text(St.ClipboardType.CLIPBOARD, item.label.text);
-                return Clutter.EVENT_PROPAGATE;
-            };
-                                    
-            let copyBtn = new PopupMenu.PopupImageMenuItem(_(locationIP.ipAddress), getIcon("ip_ed.svg"), { style_class: 'ipMenuItem'});
-            copyBtn.connect('activate', copyTextFunction);
-            obj.menu.addMenuItem(copyBtn);                                                              
+        async _onButtonClicked(obj, e) {            
+            if (this.menu) {
+                this.menu.removeAll();                        
             
-            //retrieve ASN / org details            
-            let asnText = httpRequest(extIpServiceASN, "GET");
-            if(asnText != "" && asnText != null) {
-                let asn = JSON.parse(asnText);
-                
-                if("hostname" in asn) {
-                    let hostBtn = new PopupMenu.PopupImageMenuItem(_(asn.hostname), getIcon("host.svg"), {});
-                    hostBtn.connect('activate', copyTextFunction);
-                    obj.menu.addMenuItem(hostBtn);           
-                }
+                this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem("Click to copy to clipboard"));                 
 
-                if("org" in asn) {                       
-                    let orgBtn = new PopupMenu.PopupImageMenuItem(_(asn.org), getIcon("company.svg"), {});
-                    orgBtn.connect('activate', copyTextFunction);
-                    obj.menu.addMenuItem(orgBtn);           
-                }
-
-                if("timezone" in asn) {           
-                    let tzBtn = new PopupMenu.PopupImageMenuItem(_(asn.timezone), getIcon("timezone.svg"), {});
-                    tzBtn.connect('activate', copyTextFunction);
-                    obj.menu.addMenuItem(tzBtn);           
-                }
-            }
-
-            let flagIcon = getIcon(getCachedFlag(locationIP.countryCode), true);
-            let countryBtn = new PopupMenu.PopupImageMenuItem(_(locationIP.countryName + " (" + locationIP.countryCode + "), " + locationIP.cityName), flagIcon, {});
-            countryBtn.connect('activate', copyTextFunction);
-            obj.menu.addMenuItem(countryBtn);         
-
-            if("longitude" in locationIP && "latitude" in locationIP) {
-                //show map, clicking on it will open google maps with a pin
-
-                let mapImageBtn = new PopupMenu.PopupMenuItem(_(""), { style_class: 'mapMenuItem' });                                            
-                mapImageBtn.set_style("background-image: url('" + getCachedMap(locationIP.latitude, locationIP.longitude) + "')");
-
-                let mapsUrl = 'https://maps.google.com/maps?q=' + String(locationIP.latitude) + ',' + String(locationIP.longitude);
-                
-                mapImageBtn.connect('activate', function(item, event) {           
-                    log(mapsUrl);
-                    GLib.spawn_command_line_async("xdg-open \"" + mapsUrl + "\"");
-
+                let copyTextFunction = function(item, event) {                                
+                    St.Clipboard.get_default().set_text(St.ClipboardType.CLIPBOARD, item.label.text);
                     return Clutter.EVENT_PROPAGATE;
-                });
+                };
+                
+                let locIP = this.ext.locationIP;
+                if (locIP && locIP.ipAddress) {
+                    let copyBtn = new PopupMenu.PopupImageMenuItem(locIP.ipAddress, this.ext.getIcon("ip.svg", true), { style_class: 'ipMenuItem'});
+                    copyBtn.connect('activate', copyTextFunction);
+                    this.menu.addMenuItem(copyBtn);                                                              
+                    
+                    if (locIP.hostname) {
+                        let hostBtn = new PopupMenu.PopupImageMenuItem(locIP.hostname, this.ext.getIcon("host.svg", true), {});
+                        hostBtn.connect('activate', copyTextFunction);
+                        this.menu.addMenuItem(hostBtn);           
+                    }
 
-                obj.menu.addMenuItem(mapImageBtn);   
+                    if (locIP.org || locIP.asn) {
+                        let orgText = locIP.org ? locIP.org : locIP.asn;
+                        let orgBtn = new PopupMenu.PopupImageMenuItem(orgText, this.ext.getIcon("company.svg", true), {});
+                        orgBtn.connect('activate', copyTextFunction);
+                        this.menu.addMenuItem(orgBtn);           
+                    }
+
+                    if (locIP.timezone) {           
+                        let tzBtn = new PopupMenu.PopupImageMenuItem(locIP.timezone, this.ext.getIcon("timezone.svg", true), {});
+                        tzBtn.connect('activate', copyTextFunction);
+                        this.menu.addMenuItem(tzBtn);           
+                    }
+
+                    let flagIcon = this.ext.getIcon(await this.ext.getCachedFlag(locIP.countryCode), true);
+                    let countryBtn = new PopupMenu.PopupImageMenuItem(`${locIP.countryName} (${locIP.countryCode}), ${locIP.cityName}`, flagIcon, {});
+                    countryBtn.connect('activate', copyTextFunction);
+                    this.menu.addMenuItem(countryBtn);         
+
+                    if (locIP.latitude && locIP.longitude) {
+                        let mapImageBtn = new PopupMenu.PopupMenuItem("", { style_class: 'mapMenuItem' });                                            
+                        let mapUrl = await this.ext.getCachedMap(locIP.latitude, locIP.longitude);
+                        mapImageBtn.set_style("background-image: url('file://" + mapUrl + "')");
+
+                        let mapsUrl = `https://maps.google.com/maps?q=${locIP.latitude},${locIP.longitude}`;
+                        
+                        mapImageBtn.connect('activate', (item, event) => {           
+                            GLib.spawn_command_line_async(`xdg-open "${mapsUrl}"`);
+                            return Clutter.EVENT_PROPAGATE;
+                        });
+
+                        this.menu.addMenuItem(mapImageBtn);   
+                    }
+                }
+                this.menu.toggle();            
             }
-
-            obj.menu.toggle();            
         }
     }
 );
 
+export default class ExternalIPExtension extends Extension {
+    constructor(metadata) {
+        super(metadata);
+        this.debug = false;
+        this.currentIP = ""; 
+        this.disabled = false; 
+        this.timeout = 60 * 10; 
+        this.minTimeBetweenChecks = 4; 
+        this.networkEventRefreshTimeout = 4;
+        
+        this.isIdle = false;
+        this.lastCheck = 0;
+        this.locationIP = null;
+        
+        this.notification_msg_sources = new Set();
+        this._httpSession = new Soup.Session(); // Cached session for extreme efficiency
+    }
 
-// In case of GNOME event
-function _onStatusChanged(presence, status) {
-    let backFromSleep = false;
+    lg(s) {
+        if (this.debug) console.log(`===${this.metadata.name}===> ${s}`);
+    }
 
-    lg("Gnome status changed");
+    async httpRequest(url, type = 'GET') {
+        try {
+            let message = Soup.Message.new(type, url);
+            message.request_headers.set_content_type("application/json", null);
+            
+            let bytes = await this._httpSession.send_and_read_async(message, GLib.PRIORITY_DEFAULT, null);
+            if (message.get_status() === 200) {
+                let decoder = new TextDecoder('utf-8');
+                return decoder.decode(bytes.get_data());
+            }
+        } catch (error) {
+            this.lg(error);
+        }
+        return null;
+    }
 
-    if (status == GnomeSession.PresenceStatus.IDLE) {
-        isIdle = true;        
+    async httpRequestBytes(url, type = 'GET') {
+        try {
+            let message = Soup.Message.new(type, url);
+            let bytes = await this._httpSession.send_and_read_async(message, GLib.PRIORITY_DEFAULT, null);
+            if (message.get_status() === 200) {
+                return bytes;
+            }
+        } catch (error) {
+            this.lg(error);
+        }
+        return null;
+    }
 
-        lg("Disabling network monitor");
-        networkMonitorDisable();
+    notify(title, msg) {    
+        let source = new MessageTray.Source(title, "network-transmit-receive-symbolic");
+        this.notification_msg_sources.add(source);
+        Main.messageTray.add(source);
 
-    } else {        
-        if(isIdle) {
-            backFromSleep = true;            
+        let notification = new MessageTray.Notification(source, title, msg, {        
+            bannerMarkup: true,
+            gicon: this.popup_icon
+        });          
+        
+        notification.connect('destroy', (destroyed_source) => {
+            this.notification_msg_sources.delete(destroyed_source.source);
+        });
+
+        source.showNotification(notification);
+    }
+
+    async refreshIP() {
+        let t = new Date().getTime();
+        if (t - this.lastCheck <= this.minTimeBetweenChecks * 1000) {        
+            return true;
         }
 
-        isIdle = false;
-        
-        lg("Enabling network monitor");
-        networkMonitorEnable();
+        this.lastCheck = t;
+        let resp = await this.httpRequest(extIpService);        
+
+        if (!resp) { 
+            this.lg("Null response received");
+            return false;
+        }
+
+        try {
+            let parsed = JSON.parse(resp);
+            this.locationIP = {
+                ipAddress: parsed.ip,
+                countryName: parsed.country_name,
+                countryCode: parsed.country,
+                cityName: parsed.city,
+                latitude: parsed.latitude,
+                longitude: parsed.longitude,
+                org: parsed.org,
+                asn: parsed.asn,
+                timezone: parsed.timezone
+            };
+
+            // Sometimes ipapi doesn't return a hostname. We leave it undefined if so.
+            if (parsed.hostname) {
+                this.locationIP.hostname = parsed.hostname;
+            }
+
+            if (this.currentIP !== "" && this.currentIP !== this.locationIP.ipAddress) {
+                this.lg('Note: External IP address has been changed into ' + this.locationIP.ipAddress);
+                this.notify('External IP Address', 'Has been changed to ' + this.locationIP.ipAddress);
+            }
+
+            this.currentIP = this.locationIP.ipAddress;
+            this.lg(`New IP: ${this.currentIP} - ${this.locationIP.countryName} (${this.locationIP.countryCode})`);
+
+            if (this.panelButton) {            
+                await this.panelButton.update(this.currentIP, this.locationIP.countryCode);
+            }
+            return true;
+        } catch (err) {
+            this.lg(err);
+            return false;
+        }
     }
 
-    if(backFromSleep) {
-        lg("Device unlocked/awoken");
-        if (sourceLoopID) {
-            GLib.Source.remove(sourceLoopID);
-            sourceLoopID = null;
-        }  
-
-        timer();
+    timer() {    
+        if (!this.disabled && !this.isIdle) {
+            this.sourceLoopID = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, this.timeout, () => {            
+                this.refreshIP().catch(e => this.lg(e));
+                return GLib.SOURCE_CONTINUE;
+            });
+        }    
     }
-}
 
-// In case of a network event, inquire external IP.
-function _onNetworkStatusChanged(status=null) {        
-    if(status != null && !isIdle) {        
-        lg("Network event has been triggered. Re-check ext. IP");
+    async getCachedMap(lat, lon) {    
+        let mapsDir = this.dir.get_child('maps');
+        if (!mapsDir.query_exists(null)) mapsDir.make_directory_with_parents(null);
+
+        let mapFileDestination = mapsDir.get_path() + `/${lat}_${lon}.svg`;
+        let file = Gio.File.new_for_path(mapFileDestination);
+
+        if (!file.query_exists(null)) {
+            // Cool generated radar-style SVG map placeholder
+            let svgContent = `<svg width="250" height="150" viewBox="0 0 250 150" xmlns="http://www.w3.org/2000/svg">
+                <rect width="250" height="150" fill="#1e1e2e" rx="8"/>
+                <g stroke="#313244" stroke-width="1">
+                    <line x1="0" y1="75" x2="250" y2="75" />
+                    <line x1="125" y1="0" x2="125" y2="150" />
+                </g>
+                <circle cx="125" cy="75" r="40" fill="none" stroke="#45475a" stroke-width="1" stroke-dasharray="4 4"/>
+                <circle cx="125" cy="75" r="20" fill="none" stroke="#45475a" stroke-width="1"/>
+                <circle cx="125" cy="75" r="5" fill="#f38ba8"/>
+                <circle cx="125" cy="75" r="15" fill="#f38ba8" opacity="0.3">
+                    <animate attributeName="r" values="5;25" dur="2s" repeatCount="indefinite" />
+                    <animate attributeName="opacity" values="0.8;0" dur="2s" repeatCount="indefinite" />
+                </circle>
+                <text x="10" y="25" fill="#cdd6f4" font-family="monospace" font-size="12" font-weight="bold">LOCATION LOCK</text>
+                <text x="10" y="125" fill="#a6adc8" font-family="monospace" font-size="11">LAT: ${lat}</text>
+                <text x="10" y="140" fill="#a6adc8" font-family="monospace" font-size="11">LON: ${lon}</text>
+            </svg>`;
+            file.replace_contents(svgContent, null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null);
+        }
+        return mapFileDestination;
+    }
+
+    async getCachedFlag(country) {
+        if (!country) country = "un";
+        country = country.toLowerCase();
+
+        let flagsDir = this.dir.get_child('flags');
+        if (!flagsDir.query_exists(null)) flagsDir.make_directory_with_parents(null);
+
+        let iconFileDestination = flagsDir.get_path() + `/${country}.svg`;
+        let file = Gio.File.new_for_path(iconFileDestination);
+
+        if (!file.query_exists(null)) {
+            let url = extCountryFlagService.replace("<countrycode>", country);
+            let bytes = await this.httpRequestBytes(url);
+            if (bytes) {
+                file.replace_contents_bytes_async(bytes, null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null, null);
+            }
+        }
+        return iconFileDestination;
+    }
+
+    getIcon(fileName, isAbsolutePath=false) {
+        let path = isAbsolutePath ? fileName : this.dir.get_child('img').get_path() + '/' + fileName;
         
-        if(status.get_network_available()) {
-            lg("Network is now available... rechecking IP, give it a few secs");
-                         
-            networkEventRefreshLoopID = Mainloop.timeout_add_seconds(networkEventRefreshTimeout, function() {         
-                lg("Network event triggered refresh");
-                refreshIP();
+        let file = Gio.File.new_for_path(path);
+        if (!file.query_exists(null) && !isAbsolutePath) {
+             path = this.dir.get_child('img').get_path() + '/ip.svg';
+             file = Gio.File.new_for_path(path);
+        }
+        
+        return new Gio.FileIcon({ file });
+    }
+
+    _onNetworkStatusChanged(monitor, network_available) {        
+        if (network_available && !this.isIdle) {        
+            this.lg("Network event has been triggered. Re-check ext. IP");
+            
+            if (this.networkEventRefreshLoopID) {
+                GLib.Source.remove(this.networkEventRefreshLoopID);
+            }
+
+            this.networkEventRefreshLoopID = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, this.networkEventRefreshTimeout, () => {         
+                this.refreshIP();
+                this.networkEventRefreshLoopID = null;
+                return GLib.SOURCE_REMOVE;
             });   
         }
     }
-}
 
-function lg(s) {
-    if (debug == true) log("===" + Me.metadata['gettext-domain'] + "===>" + s);
-}
+    enable() {
+        this.disabled = false;
+        this.popup_icon = this.getIcon("ip.svg");
 
-// returns raw HTTP response
-function httpRequest(url, type = 'GET') {
-    let soupSyncSession = new Soup.SessionSync();
-    let message = Soup.Message.new(type, url);
-
-    message.request_headers.set_content_type("application/json", null);
-    let responseCode = soupSyncSession.send_message(message);
-    let out;
-    if (responseCode == 200) {
-        try {
-            out = message['response-body'].data
-        } catch (error) {
-            lg(error);
+        if (!this.panelButton) {
+            this.panelButton = new Indicator(this);
         }
-    }
-    return out;
-}
-
-// Create GNOME Notification
-// inspired by: https://gitlab.gnome.org/GNOME/gnome-shell/-/blob/a3c84ca7463ed92b5be6f013a12bce927223f7c5/js/ui/main.js#L509
-// modified: 
-// - added icon specifics. 
-// - added global messagetray destination.
-// - bugfix: added fix for missing icon specification in Source constructor, this caused occassional crashes to Logout
-// - moved popup_icon to a once-initialized variable to prevent unnecessary reloading.
-function notify(title, msg) {    
-    let source = new MessageTray.Source(title, "img/ip.svg");
-
-    notification_msg_sources.add(source);
-    
-    //ensure notification is added to GNOME message tray
-    Main.messageTray.add(source);
-
-    let notification = new MessageTray.Notification(source, title, msg, {        
-        bannerMarkup: true,
-        gicon: popup_icon
-    });          
-    
-    //set to destroy messages in stack also
-    notification.connect('destroy', (destroyed_source) => {
-        notification_msg_sources.delete(destroyed_source.source);
-    });
-
-    source.showNotification(notification);
-}
-
-function getFlagUrl(countryCode) {
-    return extCountryFlagService.replace("<countrycode>", countryCode.toLowerCase());
-}
-
-// gets external IP and updates label in toolbar
-// if changed, show GNOME notification
-let lastCheck = 0;
-let locationIP = null; 
-function refreshIP() {
-
-    let t = new Date().getTime();
-    if(t - lastCheck <= minTimeBetweenChecks * 1000)  {        
-        return;
-    } else {
-
-        lastCheck = t;
         
-        let resp = httpRequest(extIpService);        
-
-        if(resp == null || resp == "") { 
-            lg("Null response received");
-            return;
-        } else {
-            lg("JSON response (" + extIpService + "):");
-            lg(resp);
-        }
-
-        locationIP = JSON.parse(resp);        
-
-        if (currentIP != "" && currentIP != locationIP.ipAddress) {
-            //new ip address found.
-            lg('Note: External IP address has been changed into ' + locationIP.ipAddress + ", trigger GNOME notification")        
-
-            try {
-                notify('External IP Address', 'Has been changed to ' + locationIP.ipAddress);
-            } catch(err) {
-                lg(err);
-            }
-        }
-
-        currentIP = locationIP.ipAddress;
-
-        lg("New IP: " + currentIP + " - " + locationIP.countryName + " (" + locationIP.countryCode + ")");
-
-        lg(getFlagUrl(locationIP.countryCode));
-
-        if(panelButton != null) {            
-            panelButton.update(currentIP, locationIP.countryCode);
-        }
-    }
-
-    return true;
-}
-
-// wait until time elapsed, to be friendly to external ip url
-function timer() {    
-    if (!disabled && !isIdle) {
-        sourceLoopID = Mainloop.timeout_add_seconds(timeout, function() {            
-            ipPromise().then(result => {
-                lg('reinvoke');
-
-                //reinvoke itself                    
-                timer();                                
-            }).catch(e => {                
-                lg('Error occured in ipPromise');                
-                timer();                             
-            });            
-        });
-    }    
-}
-
-// Run polling procedure completely async 
-function ipPromise() {
-    return new Promise((resolve, reject) => {        
-        if(refreshIP()) {
-            resolve("success");
-        } else {
-            reject("error");
-        }
-    });
-}
-
-function init() {}
-
-// Download application specific flags and cache locally
-function getCachedMap(lat,lon) {    
-    let mapFileDestination = thisExtensionDir + '/maps/' + lat + '_' + lon + '.svg';
-
-    const cwd = Gio.File.new_for_path(thisExtensionDir + "/maps/");
-    const newFile = cwd.get_child(lat + '_' + lon + ".svg");
-
-    // detects if icon is cached (exists)
-    const fileExists = newFile.query_exists(null);
-
-    if (!fileExists) {
-        // download and save in cache folder
-        // do this synchronously to ensure notifications always get a logo
-        let _httpSession = new Soup.SessionSync();
-
-        let url = extIpServiceStaticMap + "?lat=" + lat + "&lon=" + lon + "&f=SVG&marker=12&w=250&h=150";
+        Main.panel.addToStatusArea(this.uuid, this.panelButton, 0, 'right');    
         
-        let message = Soup.Message.new('GET', url);
-        let responseCode = _httpSession.send_message(message);
-        let out = null;
-        let resp = null;
-        if (responseCode == 200) {
-            try {
-                let bytes = message['response-body'].flatten().get_data();
-                const file = Gio.File.new_for_path(mapFileDestination);
-                const [, etag] = file.replace_contents(bytes, null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null);
-            } catch (e) {
-                lg("Error in cached flag");
-                lg(e);
-            }
+        this.network_monitor = Gio.network_monitor_get_default();      
+        this.network_monitor_connection = this.network_monitor.connect('network-changed', this._onNetworkStatusChanged.bind(this));
+
+        this.refreshIP();
+        this.timer();
+    }
+
+    disable() {
+        this.disabled = true;
+
+        for (let source of this.notification_msg_sources) {
+            source.destroy();        
+        }
+        this.notification_msg_sources.clear();
+
+        this.popup_icon = null;
+
+        if (this.panelButton) {
+            this.panelButton.destroy();
+            this.panelButton = null;
         }
 
-    } else {
-        // icon is readily cached, return from icons folder locally        
-    }
-
-    return mapFileDestination;
-}
-
-// Download application specific flags and cache locally
-function getCachedFlag(country) {
-    country = country.toLowerCase();
-
-    let iconFileDestination = thisExtensionDir + '/flags/' + country + '.svg';
-
-    const cwd = Gio.File.new_for_path(thisExtensionDir + "/flags/");
-    const newFile = cwd.get_child(country + ".svg");
-
-    // detects if icon is cached (exists)
-    const fileExists = newFile.query_exists(null);
-
-    if (!fileExists) {
-        // download and save in cache folder
-        // do this synchronously to ensure notifications always get a logo
-        let _httpSession = new Soup.SessionSync();
-
-        let url = getFlagUrl(country);
-        let message = Soup.Message.new('GET', url);
-        let responseCode = _httpSession.send_message(message);
-        let out = null;
-        let resp = null;
-        if (responseCode == 200) {
-            try {
-                let bytes = message['response-body'].flatten().get_data();
-                const file = Gio.File.new_for_path(iconFileDestination);
-                const [, etag] = file.replace_contents(bytes, null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null);
-            } catch (e) {
-                lg("Error in cached flag");
-                lg(e);
-            }
+        if (this.network_monitor && this.network_monitor_connection) {
+            this.network_monitor.disconnect(this.network_monitor_connection);
+            this.network_monitor_connection = null;
         }
 
-    } else {
-        // icon is readily cached, return from icons folder locally        
+        if (this.networkEventRefreshLoopID) {
+            GLib.Source.remove(this.networkEventRefreshLoopID);
+            this.networkEventRefreshLoopID = null;
+        }
+
+        if (this.sourceLoopID) {
+            GLib.Source.remove(this.sourceLoopID);
+            this.sourceLoopID = null;
+        }
+        
+        // Clear session to free memory
+        if (this._httpSession) {
+            this._httpSession.abort();
+        }
     }
-
-    return iconFileDestination;
-}
-
-// Returns SVG as gicon
-function getIcon(fileName, noPrefix=false) {
-    let prefix = "";
-    if(noPrefix == false) {
-        prefix = thisExtensionDir + "/img/";
-    }
-
-    let file = Gio.File.new_for_path(prefix + fileName);
-    return icon = new Gio.FileIcon({
-        file
-    });
-}
-
-function enable() {
-    disabled = false;
-
-    // Initialize icon once to prevent unnecessary reloading, unload in disable.
-    popup_icon = getIcon("ip.svg");
-
-    // Prepare UI
-    messageTray = new MessageTray.MessageTray()        
-
-    if(panelButton == null) {
-        panelButton = new Indicator();
-    }
-
-    // Add the button to the panel    
-    let uuid = Me.metadata.uuid;       
-    Main.panel.addToStatusArea(uuid, panelButton, 0, 'right');    
-    
-    presence = new GnomeSession.Presence((proxy, error) => {
-        //_onNetworkStatusChanged(proxy.status);
-        _onStatusChanged(proxy.status);
-    });    
-    presence_connection = presence.connectSignal('StatusChanged', (proxy, senderName, [status]) => {
-        //_onNetworkStatusChanged(status);
-        _onStatusChanged(status);
-    });  
-
-    networkMonitorEnable();
-
-    // After enabling, immediately get ip
-    refreshIP();
-
-    // Enable timer
-    timer();
-}
-
-function networkMonitorEnable() {
-    // Enable network event monitoring
-    network_monitor = Gio.network_monitor_get_default();      
-    network_monitor_connection = network_monitor.connect('network-changed', _onNetworkStatusChanged);
-}
-
-function networkMonitorDisable() {
-    // Cleanup network monitor properly    
-    network_monitor.disconnect(network_monitor_connection);
-    network_monitor = null;
-
-    // Remove timer for network events
-    if (networkEventRefreshLoopID) {
-        GLib.Source.remove(networkEventRefreshLoopID);
-        networkEventRefreshLoopID = null;
-    }
-}
-
-function disable() {
-    // Set to true so if the timer hits, stop.
-    disabled = true;
-
-    // clear messagetray - and any associated remaining sources
-    for(let source of notification_msg_sources) {
-        source.destroy();        
-    }
-
-    popup_icon = null;
-
-    messageTray = null;
-
-    // clear UI widgets
-    // Remove the added button from panel
-    // bugfix: remove panelButton before setting to null    
-    Main.panel.remove_child(panelButton);
-    panelButton.destroy();
-
-    panelButton = null;
-    panelButtonText = null;
-
-    btn=null;
-
-    locationIP=null;
-
-    presence.disconnectSignal(presence_connection);    
-    presence = null;
-
-    networkMonitorDisable();
-
-    // Remove timer loop altogether
-    if (sourceLoopID) {
-        GLib.Source.remove(sourceLoopID);
-        sourceLoopID = null;
-    }    
-
-    // Destroy indicator altogether    
-    //Indicator = null;
 }
