@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2026 Christian Wittenberg
+ * Copyright (c) 2024 Christian Wittenberg
  * History Manager & Dialog Overlay
  */
 
@@ -9,6 +9,15 @@ import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import * as ModalDialog from 'resource:///org/gnome/shell/ui/modalDialog.js';
+
+function getFlagEmoji(countryCode) {
+    if (!countryCode || countryCode.length !== 2) return '🌐';
+    const codePoints = countryCode
+        .toUpperCase()
+        .split('')
+        .map(char => 127397 + char.charCodeAt());
+    return String.fromCodePoint(...codePoints);
+}
 
 export class HistoryManager {
     constructor(dir, ext) {
@@ -75,23 +84,48 @@ export const HistoryDialog = GObject.registerClass(
             this.ext = ext;
             this.historyItems = []; 
             
-            this.setButtons([{
-                label: "Close",
-                action: () => this.close(),
-                key: Clutter.KEY_Escape
-            }]);
+            // Allow Escape key to close without needing the massive bottom buttons
+            this.connect('key-press-event', (actor, event) => {
+                if (event.get_key_symbol() === Clutter.KEY_Escape) {
+                    this.close();
+                    return Clutter.EVENT_STOP;
+                }
+                return Clutter.EVENT_PROPAGATE;
+            });
 
             let contentBox = new St.BoxLayout({
                 vertical: true,
-                style: 'padding: 16px; width: 680px;'
+                style: 'padding: 16px; width: 850px;' // slightly wider for columnar view
             });
             
+            // --- HEADER ROW (Title + Close Button) ---
+            let titleBox = new St.BoxLayout({
+                vertical: false,
+                style: 'margin-bottom: 16px;',
+                x_expand: true
+            });
+
             let title = new St.Label({
                 text: "IP Address History",
-                style: 'font-weight: bold; font-size: 18px; margin-bottom: 12px;'
+                style: 'font-weight: bold; font-size: 18px; color: #FFFFFF;',
+                y_align: Clutter.ActorAlign.CENTER,
+                x_expand: true
             });
-            contentBox.add_child(title);
 
+            let closeBtn = new St.Button({
+                label: "✖",
+                style: 'padding: 6px 10px; border-radius: 6px; font-weight: bold; background-color: rgba(255,255,255,0.1); color: #FFFFFF;',
+                reactive: true,
+                track_hover: true,
+                y_align: Clutter.ActorAlign.CENTER
+            });
+            closeBtn.connect('clicked', () => this.close());
+
+            titleBox.add_child(title);
+            titleBox.add_child(closeBtn);
+            contentBox.add_child(titleBox);
+
+            // --- SEARCH & EXPORT ROW ---
             let searchRow = new St.BoxLayout({
                 vertical: false,
                 style: 'margin-bottom: 16px;'
@@ -99,7 +133,8 @@ export const HistoryDialog = GObject.registerClass(
 
             let searchEntry = new St.Entry({
                 hint_text: "Search by IP, city, country, ISP, or coordinates...",
-                style: 'padding: 8px; border-radius: 6px; background-color: rgba(255,255,255,0.1); color: white;',
+                style_class: 'search-entry',
+                style: 'padding: 8px 12px; border-radius: 6px; background-color: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); color: white;',
                 x_expand: true,
                 can_focus: true
             });
@@ -117,7 +152,8 @@ export const HistoryDialog = GObject.registerClass(
 
             let exportBtn = new St.Button({
                 label: "Export CSV",
-                style: 'background-color: #40a02b; color: #1e1e2e; border-radius: 6px; padding: 6px 16px; font-weight: bold; margin-left: 12px;',
+                style_class: 'button',
+                style: 'margin-left: 12px; padding: 6px 16px; font-weight: bold; border-radius: 6px;',
                 reactive: true,
                 track_hover: true,
                 y_align: Clutter.ActorAlign.CENTER
@@ -165,8 +201,9 @@ export const HistoryDialog = GObject.registerClass(
             searchRow.add_child(exportBtn);
             contentBox.add_child(searchRow);
 
+            // --- TABLE LAYOUT ---
             let scrollView = new St.ScrollView({
-                style: 'height: 450px; background-color: rgba(0,0,0,0.3); border-radius: 8px; padding: 12px;',
+                style: 'height: 450px; background-color: rgba(0,0,0,0.2); border-radius: 8px; padding: 12px; border: 1px solid rgba(0,0,0,0.4);',
                 x_expand: true,
                 y_expand: true,
                 hscrollbar_policy: St.PolicyType.NEVER,
@@ -175,12 +212,24 @@ export const HistoryDialog = GObject.registerClass(
             
             let historyList = new St.BoxLayout({
                 vertical: true,
-                style: 'spacing: 12px;'
+                style: 'spacing: 8px;'
             });
+
+            // Column Header
+            let colHeaderRow = new St.BoxLayout({
+                vertical: false,
+                style: 'padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.1); margin-bottom: 4px;'
+            });
+            colHeaderRow.add_child(new St.Label({ text: "Date", style: 'width: 140px; font-weight: bold; color: #aaaaaa;' }));
+            colHeaderRow.add_child(new St.Label({ text: "IP Addresses", style: 'width: 180px; font-weight: bold; color: #aaaaaa;' }));
+            colHeaderRow.add_child(new St.Label({ text: "Location", style: 'width: 170px; font-weight: bold; color: #aaaaaa;' }));
+            colHeaderRow.add_child(new St.Label({ text: "ISP", style: 'width: 160px; font-weight: bold; color: #aaaaaa;' }));
+            colHeaderRow.add_child(new St.Label({ text: "Actions", style: 'width: 100px; font-weight: bold; color: #aaaaaa;' }));
+            historyList.add_child(colHeaderRow);
 
             this.ext.historyManager.readHistoryAsync().then(history => {
                 if (history.length === 0) {
-                    historyList.add_child(new St.Label({ text: "No history available yet." }));
+                    historyList.add_child(new St.Label({ text: "No history available yet.", style: 'color: #aaaaaa; margin-top: 10px;' }));
                 }
 
                 let withCopyConfirm = (btn, textToCopy, originalLabel) => {
@@ -202,80 +251,81 @@ export const HistoryDialog = GObject.registerClass(
 
                 for (let entry of history) {
                     let date = new Date(entry.timestamp);
-                    let dateStr = `${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
-                    let fullSearchString = `${dateStr} ${entry.ipv4} ${entry.ipv6} ${entry.countryName} ${entry.countryCode} ${entry.cityName} ${entry.org} ${entry.asn} ${entry.latitude} ${entry.longitude}`.toLowerCase();
+                    let dateStr = `${date.toLocaleDateString()}\n${date.toLocaleTimeString()}`;
+                    let fullSearchString = `${date.toLocaleDateString()} ${date.toLocaleTimeString()} ${entry.ipv4} ${entry.ipv6} ${entry.countryName} ${entry.countryCode} ${entry.cityName} ${entry.org} ${entry.asn} ${entry.latitude} ${entry.longitude}`.toLowerCase();
                     
-                    let entryBox = new St.BoxLayout({
-                        vertical: true,
-                        style: 'background-color: rgba(255,255,255,0.05); border-radius: 8px; padding: 16px;'
+                    // Table Row
+                    let rowBox = new St.BoxLayout({
+                        vertical: false,
+                        style: 'padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.05);'
                     });
 
-                    let headerBox = new St.BoxLayout({
-                        vertical: false,
-                        x_expand: true
-                    });
-                    
+                    // 1. Date Col
                     let dateLabel = new St.Label({
                         text: dateStr,
-                        style: 'font-weight: bold; font-size: 16px; color: #a6adc8;',
-                        y_align: Clutter.ActorAlign.CENTER,
-                        x_expand: true
-                    });
-                    
-                    let copyAllBtn = new St.Button({
-                        label: "Copy Full Record",
-                        style: 'background-color: #313244; color: #cdd6f4; border-radius: 6px; padding: 6px 12px; font-size: 13px; font-weight: bold;',
-                        reactive: true,
-                        track_hover: true,
+                        style: 'width: 140px; font-size: 13px; color: #dddddd;',
                         y_align: Clutter.ActorAlign.CENTER
                     });
-                    
-                    let fullText = `Date: ${dateStr}\nIPv4: ${entry.ipv4 || 'N/A'}\nIPv6: ${entry.ipv6 || 'N/A'}\nLocation: ${entry.countryName}, ${entry.cityName}\nISP: ${entry.org || entry.asn || 'N/A'}\nCoordinates: ${entry.latitude}, ${entry.longitude}`;
-                    withCopyConfirm(copyAllBtn, fullText, "Copy Full Record");
-                    
-                    headerBox.add_child(dateLabel);
-                    headerBox.add_child(copyAllBtn);
-                    entryBox.add_child(headerBox);
+                    rowBox.add_child(dateLabel);
 
-                    let ipBox = new St.BoxLayout({ vertical: false, style: 'spacing: 8px; margin-top: 12px;' });
+                    // 2. IPs Col
+                    let ipColBox = new St.BoxLayout({ vertical: true, style: 'width: 180px; spacing: 4px;', y_align: Clutter.ActorAlign.CENTER });
                     
-                    let v4Box = new St.BoxLayout({ vertical: false, style: 'spacing: 6px;' });
-                    v4Box.add_child(new St.Label({ text: "IPv4:", style: 'color: #89b4fa; font-weight: bold;' }));
                     let v4LabelStr = entry.ipv4 || "N/A";
-                    let v4Btn = new St.Button({ label: v4LabelStr, style: 'color: #cdd6f4; text-decoration: underline;', reactive: true });
-                    withCopyConfirm(v4Btn, entry.ipv4, v4LabelStr);
-                    v4Box.add_child(v4Btn);
+                    let v4Btn = new St.Button({ label: `v4: ${v4LabelStr}`, style: 'color: #E95420; text-decoration: underline; background-color: transparent; text-align: left;', reactive: true });
+                    withCopyConfirm(v4Btn, entry.ipv4, `v4: ${v4LabelStr}`);
+                    ipColBox.add_child(v4Btn);
 
-                    let v6Box = new St.BoxLayout({ vertical: false, style: 'spacing: 6px; margin-left: 24px;' });
-                    v6Box.add_child(new St.Label({ text: "IPv6:", style: 'color: #89b4fa; font-weight: bold;' }));
                     let v6LabelStr = entry.ipv6 || "N/A";
-                    let v6Btn = new St.Button({ label: v6LabelStr, style: 'color: #cdd6f4; text-decoration: underline;', reactive: true });
-                    withCopyConfirm(v6Btn, entry.ipv6, v6LabelStr);
-                    v6Box.add_child(v6Btn);
+                    let v6Btn = new St.Button({ label: `v6: ${v6LabelStr}`, style: 'color: #E95420; text-decoration: underline; background-color: transparent; text-align: left;', reactive: true });
+                    withCopyConfirm(v6Btn, entry.ipv6, `v6: ${v6LabelStr}`);
+                    ipColBox.add_child(v6Btn);
 
-                    ipBox.add_child(v4Box);
-                    ipBox.add_child(v6Box);
+                    rowBox.add_child(ipColBox);
 
-                    entryBox.add_child(ipBox);
+                    // 3. Location Col (With Flag)
+                    let locColBox = new St.BoxLayout({ vertical: true, style: 'width: 170px; spacing: 2px;', y_align: Clutter.ActorAlign.CENTER });
+                    let flagEmoji = getFlagEmoji(entry.countryCode);
+                    let countryLabel = new St.Label({ text: `${flagEmoji} ${entry.countryName}`, style: 'color: #ffffff; font-weight: bold; font-size: 13px;' });
+                    let cityLabel = new St.Label({ text: entry.cityName || 'Unknown City', style: 'color: #aaaaaa; font-size: 12px;' });
+                    locColBox.add_child(countryLabel);
+                    locColBox.add_child(cityLabel);
+                    rowBox.add_child(locColBox);
 
-                    let locBox = new St.BoxLayout({ vertical: false, style: 'spacing: 8px; margin-top: 8px;' });
-                    locBox.add_child(new St.Label({ text: "Location:", style: 'color: #f9e2af; font-weight: bold;' }));
-                    locBox.add_child(new St.Label({ text: `${entry.countryName} (${entry.countryCode}), ${entry.cityName}` }));
-                    entryBox.add_child(locBox);
+                    // 4. ISP Col
+                    let ispLabel = new St.Label({
+                        text: entry.org || entry.asn || 'Unknown',
+                        style: 'width: 160px; color: #dddddd; font-size: 13px;',
+                        y_align: Clutter.ActorAlign.CENTER
+                    });
+                    // Simple text wrapping fix for long ISP names inside St
+                    ispLabel.clutter_text.line_wrap = true;
+                    ispLabel.clutter_text.line_wrap_mode = 1; // Pango.WrapMode.CHAR
+                    rowBox.add_child(ispLabel);
 
-                    let ispBox = new St.BoxLayout({ vertical: false, style: 'spacing: 8px; margin-top: 8px;' });
-                    ispBox.add_child(new St.Label({ text: "ISP:", style: 'color: #f9e2af; font-weight: bold;' }));
-                    ispBox.add_child(new St.Label({ text: `${entry.org || entry.asn || 'Unknown'}` }));
-                    entryBox.add_child(ispBox);
-
-                    let mapBox = new St.BoxLayout({ vertical: false, style: 'spacing: 8px; margin-top: 8px;' });
-                    mapBox.add_child(new St.Label({ text: "Coordinates:", style: 'color: #f38ba8; font-weight: bold;' }));
+                    // 5. Actions Col
+                    let actionsColBox = new St.BoxLayout({ vertical: true, style: 'width: 100px; spacing: 6px;', y_align: Clutter.ActorAlign.CENTER });
                     
-                    let providerName = mapProvider === 'osm' ? 'OSM' : (mapProvider === 'apple' ? 'Apple Maps' : 'Google Maps');
-                    let mapBtn = new St.Button({ label: `${entry.latitude}, ${entry.longitude} (Open in ${providerName})`, style: 'color: #cdd6f4; text-decoration: underline;', reactive: true });
+                    let copyAllBtn = new St.Button({
+                        label: "Copy Info",
+                        style_class: 'button',
+                        style: 'padding: 2px 8px; font-size: 12px; border-radius: 4px;',
+                        reactive: true,
+                        track_hover: true
+                    });
+                    
+                    let fullText = `Date: ${dateStr.replace('\n', ' ')}\nIPv4: ${entry.ipv4 || 'N/A'}\nIPv6: ${entry.ipv6 || 'N/A'}\nLocation: ${entry.countryName}, ${entry.cityName}\nISP: ${entry.org || entry.asn || 'N/A'}\nCoordinates: ${entry.latitude}, ${entry.longitude}`;
+                    withCopyConfirm(copyAllBtn, fullText, "Copy Info");
+                    actionsColBox.add_child(copyAllBtn);
+
+                    let mapBtn = new St.Button({ 
+                        label: "Map View ↗", 
+                        style: 'color: #62A0EA; text-decoration: underline; background-color: transparent; font-size: 12px;', // Standard blue link instead of orange
+                        reactive: true 
+                    });
                     
                     mapBtn.connect('clicked', () => {
-                        let mapsUrl = `https://www.google.com/maps?q=$${entry.latitude},${entry.longitude}`;
+                        let mapsUrl = `https://maps.google.com/?q=${entry.latitude},${entry.longitude}`;
                         if (mapProvider === 'osm') {
                             mapsUrl = `https://www.openstreetmap.org/?mlat=${entry.latitude}&mlon=${entry.longitude}#map=12/${entry.latitude}/${entry.longitude}`;
                         } else if (mapProvider === 'apple') {
@@ -288,12 +338,12 @@ export const HistoryDialog = GObject.registerClass(
                             this.ext.lg(`Map Link Error: ${err}`);
                         }
                     });
-                    
-                    mapBox.add_child(mapBtn);
-                    entryBox.add_child(mapBox);
+                    actionsColBox.add_child(mapBtn);
 
-                    this.historyItems.push({ widget: entryBox, searchText: fullSearchString, data: entry });
-                    historyList.add_child(entryBox);
+                    rowBox.add_child(actionsColBox);
+
+                    this.historyItems.push({ widget: rowBox, searchText: fullSearchString, data: entry });
+                    historyList.add_child(rowBox);
                 }
             });
 
