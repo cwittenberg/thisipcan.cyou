@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022 Christian Wittenberg
+ * Copyright (c) 2022-2024 Christian Wittenberg
  * GNOME 50 Port
  *
  * thisipcan.cyou gnome extension is free software; you can redistribute it and/or modify
@@ -22,7 +22,9 @@ import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 
-const extIpService = 'https://ipapi.co/json/';
+const extIpServiceGeo = 'https://ipwho.is/';
+const extIpServiceV4 = 'https://api4.ipify.org?format=json';
+const extIpServiceV6 = 'https://api6.ipify.org?format=json';
 const extCountryFlagService = 'https://flagcdn.com/<countrycode>.svg';
 
 const Indicator = GObject.registerClass(
@@ -34,7 +36,7 @@ const Indicator = GObject.registerClass(
             this.btn = new St.Button();            
             this.btn.set_style_class_name("notifyIcon");
             
-            this.update("", "un").catch(e => this.ext.lg(e));
+            this.updateUI().catch(e => this.ext.lg(e));
                 
             this.connect('button-press-event', this._onButtonClicked.bind(this));
             this.btn.connect('button-press-event', this._onButtonClicked.bind(this));
@@ -42,34 +44,69 @@ const Indicator = GObject.registerClass(
             this.add_child(this.btn);                        
         }        
 
-        async update(ip, country) {                        
-            let flagURL = await this.ext.getCachedFlag(country);            
-            this.btn.set_style('background-image: url("file://' + flagURL + '");');
-            this.btn.set_label(ip || "...");     
+        async updateUI() {
+            let locIP = this.ext.locationIP;
+            if (!locIP) {
+                this.btn.set_label("...");
+                return;
+            }
+
+            let flagURL = await this.ext.getCachedFlag(locIP.countryCode);            
+            this.btn.set_style(`background-image: url("file://${flagURL}");`);
+
+            let displayMode = this.ext.settings.get_string('title-display-mode');
+            
+            if (displayMode === 'flag-only') {
+                this.btn.set_label("");
+            } else if (displayMode === 'isp') {
+                this.btn.set_label(locIP.org || locIP.asn || "Unknown ISP");
+            } else {
+                let priority = this.ext.settings.get_string('ip-version-priority');
+                let displayIP = "";
+                
+                if (priority === 'ipv6' && locIP.ipv6) {
+                    displayIP = locIP.ipv6;
+                } else if (priority === 'ipv4' && locIP.ipv4) {
+                    displayIP = locIP.ipv4;
+                } else {
+                    displayIP = locIP.ipv6 || locIP.ipv4 || locIP.primaryIp;
+                }
+                this.btn.set_label(displayIP);
+            }
         }
 
         async _onButtonClicked(obj, e) {            
             if (this.menu) {
                 this.menu.removeAll();                        
             
-                this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem("Click to copy to clipboard"));                 
-
                 let copyTextFunction = function(item, event) {                                
                     St.Clipboard.get_default().set_text(St.ClipboardType.CLIPBOARD, item.label.text);
                     return Clutter.EVENT_PROPAGATE;
                 };
                 
                 let locIP = this.ext.locationIP;
-                if (locIP && locIP.ipAddress) {
-                    let copyBtn = new PopupMenu.PopupImageMenuItem(locIP.ipAddress, this.ext.getIcon("ip.svg", true), { style_class: 'ipMenuItem'});
-                    copyBtn.connect('activate', copyTextFunction);
-                    this.menu.addMenuItem(copyBtn);                                                              
+                if (locIP) {
+                    this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem("IP Addresses (Click to copy)"));
                     
-                    if (locIP.hostname) {
-                        let hostBtn = new PopupMenu.PopupImageMenuItem(locIP.hostname, this.ext.getIcon("host.svg", true), {});
-                        hostBtn.connect('activate', copyTextFunction);
-                        this.menu.addMenuItem(hostBtn);           
+                    if (locIP.ipv4) {
+                        let v4Btn = new PopupMenu.PopupImageMenuItem(`IPv4: ${locIP.ipv4}`, this.ext.getIcon("ip.svg", true), { style_class: 'ipMenuItem'});
+                        v4Btn.connect('activate', copyTextFunction);
+                        this.menu.addMenuItem(v4Btn);
                     }
+                    
+                    if (locIP.ipv6) {
+                        let v6Btn = new PopupMenu.PopupImageMenuItem(`IPv6: ${locIP.ipv6}`, this.ext.getIcon("ip.svg", true), { style_class: 'ipMenuItem'});
+                        v6Btn.connect('activate', copyTextFunction);
+                        this.menu.addMenuItem(v6Btn);
+                    }
+                    
+                    if (!locIP.ipv4 && !locIP.ipv6 && locIP.primaryIp) {
+                        let pBtn = new PopupMenu.PopupImageMenuItem(`${locIP.primaryIp}`, this.ext.getIcon("ip.svg", true), { style_class: 'ipMenuItem'});
+                        pBtn.connect('activate', copyTextFunction);
+                        this.menu.addMenuItem(pBtn);
+                    }
+
+                    this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem("Network Details"));
 
                     if (locIP.org || locIP.asn) {
                         let orgText = locIP.org ? locIP.org : locIP.asn;
@@ -90,19 +127,33 @@ const Indicator = GObject.registerClass(
                     this.menu.addMenuItem(countryBtn);         
 
                     if (locIP.latitude && locIP.longitude) {
-                        let mapImageBtn = new PopupMenu.PopupMenuItem("", { style_class: 'mapMenuItem' });                                            
+                        let mapImageBtn = new PopupMenu.PopupBaseMenuItem({ style_class: 'mapMenuItem' });                                            
                         let mapUrl = await this.ext.getCachedMap(locIP.latitude, locIP.longitude);
-                        mapImageBtn.set_style("background-image: url('file://" + mapUrl + "')");
+                        
+                        let mapWidget = new St.Widget({
+                            style: `background-image: url('file://${mapUrl}'); background-size: cover; border-radius: 8px;`,
+                            width: 250,
+                            height: 150,
+                            x_expand: true,
+                            y_expand: true
+                        });
+                        mapImageBtn.add_child(mapWidget);
 
                         let mapsUrl = `https://maps.google.com/maps?q=${locIP.latitude},${locIP.longitude}`;
-                        
-                        mapImageBtn.connect('activate', (item, event) => {           
+                        mapImageBtn.connect('activate', () => {           
                             GLib.spawn_command_line_async(`xdg-open "${mapsUrl}"`);
                             return Clutter.EVENT_PROPAGATE;
                         });
 
                         this.menu.addMenuItem(mapImageBtn);   
                     }
+                    
+                    this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+                    let settingsItem = new PopupMenu.PopupMenuItem("Extension Settings...");
+                    settingsItem.connect('activate', () => {
+                        this.ext.openPreferences();
+                    });
+                    this.menu.addMenuItem(settingsItem);
                 }
                 this.menu.toggle();            
             }
@@ -113,8 +164,6 @@ const Indicator = GObject.registerClass(
 export default class ExternalIPExtension extends Extension {
     constructor(metadata) {
         super(metadata);
-        this.debug = false;
-        this.currentIP = ""; 
         this.disabled = false; 
         this.timeout = 60 * 10; 
         this.minTimeBetweenChecks = 4; 
@@ -125,16 +174,24 @@ export default class ExternalIPExtension extends Extension {
         this.locationIP = null;
         
         this.notification_msg_sources = new Set();
-        this._httpSession = new Soup.Session(); // Cached session for extreme efficiency
+        
+        this._httpSession = new Soup.Session(); 
+        this._httpSession.timeout = 8;
+        
+        this._settingsChangedId = 0;
     }
 
     lg(s) {
-        if (this.debug) console.log(`===${this.metadata.name}===> ${s}`);
+        if (!this.settings || !this.settings.get_boolean('enable-debug-logs')) return;
+        let now = GLib.DateTime.new_now_local();
+        let ms = now.get_microsecond().toString().padStart(6, '0').substring(0, 3);
+        console.log(`[ShowExternalIP] [${now.format('%H:%M:%S')}.${ms}] ${s}`);
     }
 
-    async httpRequest(url, type = 'GET') {
+    async httpRequest(url) {
         try {
-            let message = Soup.Message.new(type, url);
+            let message = Soup.Message.new('GET', url);
+            message.request_headers.append("User-Agent", "GNOME-Shell-Extension/ShowExternalIP");
             message.request_headers.set_content_type("application/json", null);
             
             let bytes = await this._httpSession.send_and_read_async(message, GLib.PRIORITY_DEFAULT, null);
@@ -143,20 +200,20 @@ export default class ExternalIPExtension extends Extension {
                 return decoder.decode(bytes.get_data());
             }
         } catch (error) {
-            this.lg(error);
+            this.lg(`HTTP Request Error [${url}]: ${error}`);
         }
         return null;
     }
 
-    async httpRequestBytes(url, type = 'GET') {
+    async httpRequestBytes(url) {
         try {
-            let message = Soup.Message.new(type, url);
+            let message = Soup.Message.new('GET', url);
+            message.request_headers.append("User-Agent", "GNOME-Shell-Extension/ShowExternalIP");
+            
             let bytes = await this._httpSession.send_and_read_async(message, GLib.PRIORITY_DEFAULT, null);
-            if (message.get_status() === 200) {
-                return bytes;
-            }
+            if (message.get_status() === 200) return bytes;
         } catch (error) {
-            this.lg(error);
+            this.lg(`HTTP Bytes Error [${url}]: ${error}`);
         }
         return null;
     }
@@ -180,51 +237,55 @@ export default class ExternalIPExtension extends Extension {
 
     async refreshIP() {
         let t = new Date().getTime();
-        if (t - this.lastCheck <= this.minTimeBetweenChecks * 1000) {        
-            return true;
-        }
-
+        if (t - this.lastCheck <= this.minTimeBetweenChecks * 1000) return true;
         this.lastCheck = t;
-        let resp = await this.httpRequest(extIpService);        
 
-        if (!resp) { 
-            this.lg("Null response received");
+        let [geoResp, v4Resp, v6Resp] = await Promise.all([
+            this.httpRequest(extIpServiceGeo),
+            this.httpRequest(extIpServiceV4),
+            this.httpRequest(extIpServiceV6)
+        ]);       
+
+        if (!geoResp) { 
+            this.lg("Null response received from primary API");
             return false;
         }
 
         try {
-            let parsed = JSON.parse(resp);
-            this.locationIP = {
-                ipAddress: parsed.ip,
-                countryName: parsed.country_name,
-                countryCode: parsed.country,
-                cityName: parsed.city,
-                latitude: parsed.latitude,
-                longitude: parsed.longitude,
-                org: parsed.org,
-                asn: parsed.asn,
-                timezone: parsed.timezone
+            let parsedGeo = JSON.parse(geoResp);
+            let parsedV4 = v4Resp ? JSON.parse(v4Resp).ip : null;
+            let parsedV6 = v6Resp ? JSON.parse(v6Resp).ip : null;
+            
+            let newLocationIP = {
+                primaryIp: parsedGeo.ip,
+                ipv4: parsedV4,
+                ipv6: parsedV6,
+                countryName: parsedGeo.country,
+                countryCode: parsedGeo.country_code,
+                cityName: parsedGeo.city,
+                latitude: parsedGeo.latitude,
+                longitude: parsedGeo.longitude,
+                org: parsedGeo.connection ? parsedGeo.connection.org : "",
+                asn: parsedGeo.connection ? parsedGeo.connection.asn : "",
+                timezone: parsedGeo.timezone ? parsedGeo.timezone.id : ""
             };
 
-            // Sometimes ipapi doesn't return a hostname. We leave it undefined if so.
-            if (parsed.hostname) {
-                this.locationIP.hostname = parsed.hostname;
+            let primaryChanged = this.locationIP && this.locationIP.primaryIp !== newLocationIP.primaryIp;
+            this.locationIP = newLocationIP;
+
+            if (primaryChanged) {
+                this.lg('Note: External IP address has been changed into ' + this.locationIP.primaryIp);
+                this.notify('External IP Address', 'Has been changed to ' + this.locationIP.primaryIp);
             }
 
-            if (this.currentIP !== "" && this.currentIP !== this.locationIP.ipAddress) {
-                this.lg('Note: External IP address has been changed into ' + this.locationIP.ipAddress);
-                this.notify('External IP Address', 'Has been changed to ' + this.locationIP.ipAddress);
-            }
-
-            this.currentIP = this.locationIP.ipAddress;
-            this.lg(`New IP: ${this.currentIP} - ${this.locationIP.countryName} (${this.locationIP.countryCode})`);
+            this.lg(`Resolved IPs -> v4: ${this.locationIP.ipv4}, v6: ${this.locationIP.ipv6}`);
 
             if (this.panelButton) {            
-                await this.panelButton.update(this.currentIP, this.locationIP.countryCode);
+                await this.panelButton.updateUI();
             }
             return true;
         } catch (err) {
-            this.lg(err);
+            this.lg(`JSON Parse Error: ${err}`);
             return false;
         }
     }
@@ -246,7 +307,6 @@ export default class ExternalIPExtension extends Extension {
         let file = Gio.File.new_for_path(mapFileDestination);
 
         if (!file.query_exists(null)) {
-            // Cool generated radar-style SVG map placeholder
             let svgContent = `<svg width="250" height="150" viewBox="0 0 250 150" xmlns="http://www.w3.org/2000/svg">
                 <rect width="250" height="150" fill="#1e1e2e" rx="8"/>
                 <g stroke="#313244" stroke-width="1">
@@ -319,6 +379,8 @@ export default class ExternalIPExtension extends Extension {
 
     enable() {
         this.disabled = false;
+        this.settings = this.getSettings();
+        
         this.popup_icon = this.getIcon("ip.svg");
 
         if (!this.panelButton) {
@@ -330,12 +392,24 @@ export default class ExternalIPExtension extends Extension {
         this.network_monitor = Gio.network_monitor_get_default();      
         this.network_monitor_connection = this.network_monitor.connect('network-changed', this._onNetworkStatusChanged.bind(this));
 
+        this._settingsChangedId = this.settings.connect('changed', () => {
+            if (this.panelButton) this.panelButton.updateUI();
+        });
+
         this.refreshIP();
         this.timer();
+        
+        this.lg("Extension Enabled");
     }
 
     disable() {
+        this.lg("Disabling Extension");
         this.disabled = true;
+
+        if (this._settingsChangedId && this.settings) {
+            this.settings.disconnect(this._settingsChangedId);
+            this._settingsChangedId = 0;
+        }
 
         for (let source of this.notification_msg_sources) {
             source.destroy();        
@@ -364,9 +438,10 @@ export default class ExternalIPExtension extends Extension {
             this.sourceLoopID = null;
         }
         
-        // Clear session to free memory
         if (this._httpSession) {
             this._httpSession.abort();
         }
+        
+        this.settings = null;
     }
 }

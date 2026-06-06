@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.show-external-ip" path="/org/gnome/shell/extensions/show-external-ip/">
+    
+    <key name="ip-version-priority" type="s">
+      <default>'ipv4'</default>
+      <summary>Preferred IP Version to Display</summary>
+    </key>
+    
+    <key name="title-display-mode" type="s">
+      <default>'ip'</default>
+      <summary>Information to show in panel</summary>
+    </key>
+    
+    <key name="enable-debug-logs" type="b">
+      <default>false</default>
+      <summary>Enable Debug Logging</summary>
+    </key>
+
+  </schema>
+</schemalist>

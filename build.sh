@@ -6,13 +6,23 @@ OUTPUT_ZIP="${EXTENSION_UUID}.shell-extension.zip"
 
 echo "Building GNOME Extension: $EXTENSION_UUID"
 
-# Ensure all necessary folders exist before packing
-mkdir -p img flags maps
+# Ensure all necessary folders exist
+mkdir -p img flags maps schemas
 
-# Use the official gnome-extensions tool to package the extension
-# We explicitly point to the current directory (.) as the source
+echo "[1/3] Compiling GSettings schemas..."
+glib-compile-schemas schemas/ || {
+    echo "Error: Schema compilation failed."
+    exit 1
+}
+
+echo "[2/3] Removing previous build artifacts..."
+rm -f "$OUTPUT_ZIP"
+
+echo "[3/3] Packaging extension..."
 gnome-extensions pack . \
   --force \
+  --extra-source="schemas/" \
+  --extra-source="prefs.js" \
   --extra-source="img" \
   --extra-source="flags" \
   --extra-source="maps" \
@@ -32,6 +42,6 @@ if [ -f "$OUTPUT_ZIP" ]; then
     echo "Finally, enable it:"
     echo "gnome-extensions enable $EXTENSION_UUID"
 else
-    echo "Build failed. Ensure you have gnome-extensions installed and check for typos in metadata.json."
+    echo "Build failed. Ensure you have gnome-extensions installed."
     exit 1
 fi
