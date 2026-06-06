@@ -69,15 +69,44 @@ export default class ShowExternalIPPreferences extends ExtensionPreferences {
             settings.set_string('ip-version-priority', rowPriority.selected === 1 ? 'ipv6' : 'ipv4');
         });
 
-        // Toggle sensitivity based on display mode
         const syncSensitivity = () => {
             rowPriority.set_sensitive(rowTitleMode.selected === 0);
         };
         rowTitleMode.connect('notify::selected', syncSensitivity);
         syncSensitivity();
 
+        const rowMapProvider = new Adw.ComboRow({
+            title: 'Map Provider',
+            subtitle: 'Which service to open when clicking the location map',
+            model: Gtk.StringList.new(['Google Maps', 'OpenStreetMap', 'Apple Maps'])
+        });
+
+        let currentProvider = settings.get_string('map-provider');
+        if (currentProvider === 'osm') rowMapProvider.selected = 1;
+        else if (currentProvider === 'apple') rowMapProvider.selected = 2;
+        else rowMapProvider.selected = 0;
+
+        rowMapProvider.connect('notify::selected', () => {
+            if (rowMapProvider.selected === 1) settings.set_string('map-provider', 'osm');
+            else if (rowMapProvider.selected === 2) settings.set_string('map-provider', 'apple');
+            else settings.set_string('map-provider', 'google');
+        });
+
+        const rowNotifications = new Adw.ActionRow({
+            title: 'Enable Notifications',
+            subtitle: 'Show a system notification when your IP address changes'
+        });
+        const switchNotifications = new Gtk.Switch({
+            active: settings.get_boolean('show-notifications'),
+            valign: Gtk.Align.CENTER
+        });
+        settings.bind('show-notifications', switchNotifications, 'active', Gio.SettingsBindFlags.DEFAULT);
+        rowNotifications.add_suffix(switchNotifications);
+
         groupDisplay.add(wrap(rowTitleMode));
         groupDisplay.add(wrap(rowPriority));
+        groupDisplay.add(wrap(rowMapProvider));
+        groupDisplay.add(wrap(rowNotifications));
 
         // --- Extension Information Group ---
         const groupAboutInfo = new Adw.PreferencesGroup({ title: 'Extension Information' });

@@ -11,6 +11,18 @@
       <default>'ip'</default>
       <summary>Information to show in panel</summary>
     </key>
+
+    <key name="map-provider" type="s">
+      <default>'google'</default>
+      <summary>Map Provider</summary>
+      <description>Service to open when clicking the map</description>
+    </key>
+
+    <key name="show-notifications" type="b">
+      <default>true</default>
+      <summary>Enable Notifications</summary>
+      <description>Show a system notification when IP changes</description>
+    </key>
     
     <key name="enable-debug-logs" type="b">
       <default>false</default>

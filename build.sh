@@ -22,6 +22,7 @@ echo "[3/3] Packaging extension..."
 gnome-extensions pack . \
   --force \
   --extra-source="schemas/" \
+  --extra-source="history.js" \
   --extra-source="prefs.js" \
   --extra-source="img" \
   --extra-source="flags" \

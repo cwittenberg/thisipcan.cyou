@@ -1,11 +1,6 @@
 /*
  * Copyright (c) 2022-2024 Christian Wittenberg
  * GNOME 50 Port
- *
- * thisipcan.cyou gnome extension is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 3 of the License, or (at your
- * option) any later version.
  */
 
 import St from 'gi://St';
@@ -21,6 +16,7 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
+import { HistoryManager, HistoryDialog } from './history.js';
 
 const extIpServiceGeo = 'https://ipwho.is/';
 const extIpServiceV4 = 'https://api4.ipify.org?format=json';
@@ -76,86 +72,129 @@ const Indicator = GObject.registerClass(
         }
 
         async _onButtonClicked(obj, e) {            
-            if (this.menu) {
-                this.menu.removeAll();                        
-            
-                let copyTextFunction = function(item, event) {                                
-                    St.Clipboard.get_default().set_text(St.ClipboardType.CLIPBOARD, item.label.text);
-                    return Clutter.EVENT_PROPAGATE;
-                };
+            try {
+                if (this.menu) {
+                    this.menu.removeAll();                        
                 
-                let locIP = this.ext.locationIP;
-                if (locIP) {
-                    this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem("IP Addresses (Click to copy)"));
+                    let copyTextFunction = function(textToCopy) {                                
+                        St.Clipboard.get_default().set_text(St.ClipboardType.CLIPBOARD, textToCopy);
+                        return Clutter.EVENT_PROPAGATE;
+                    };
                     
-                    if (locIP.ipv4) {
-                        let v4Btn = new PopupMenu.PopupImageMenuItem(`IPv4: ${locIP.ipv4}`, this.ext.getIcon("ip.svg", true), { style_class: 'ipMenuItem'});
-                        v4Btn.connect('activate', copyTextFunction);
-                        this.menu.addMenuItem(v4Btn);
-                    }
-                    
-                    if (locIP.ipv6) {
-                        let v6Btn = new PopupMenu.PopupImageMenuItem(`IPv6: ${locIP.ipv6}`, this.ext.getIcon("ip.svg", true), { style_class: 'ipMenuItem'});
-                        v6Btn.connect('activate', copyTextFunction);
-                        this.menu.addMenuItem(v6Btn);
-                    }
-                    
-                    if (!locIP.ipv4 && !locIP.ipv6 && locIP.primaryIp) {
-                        let pBtn = new PopupMenu.PopupImageMenuItem(`${locIP.primaryIp}`, this.ext.getIcon("ip.svg", true), { style_class: 'ipMenuItem'});
-                        pBtn.connect('activate', copyTextFunction);
-                        this.menu.addMenuItem(pBtn);
-                    }
-
-                    this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem("Network Details"));
-
-                    if (locIP.org || locIP.asn) {
-                        let orgText = locIP.org ? locIP.org : locIP.asn;
-                        let orgBtn = new PopupMenu.PopupImageMenuItem(orgText, this.ext.getIcon("company.svg", true), {});
-                        orgBtn.connect('activate', copyTextFunction);
-                        this.menu.addMenuItem(orgBtn);           
-                    }
-
-                    if (locIP.timezone) {           
-                        let tzBtn = new PopupMenu.PopupImageMenuItem(locIP.timezone, this.ext.getIcon("timezone.svg", true), {});
-                        tzBtn.connect('activate', copyTextFunction);
-                        this.menu.addMenuItem(tzBtn);           
-                    }
-
-                    let flagIcon = this.ext.getIcon(await this.ext.getCachedFlag(locIP.countryCode), true);
-                    let countryBtn = new PopupMenu.PopupImageMenuItem(`${locIP.countryName} (${locIP.countryCode}), ${locIP.cityName}`, flagIcon, {});
-                    countryBtn.connect('activate', copyTextFunction);
-                    this.menu.addMenuItem(countryBtn);         
-
-                    if (locIP.latitude && locIP.longitude) {
-                        let mapImageBtn = new PopupMenu.PopupBaseMenuItem({ style_class: 'mapMenuItem' });                                            
-                        let mapUrl = await this.ext.getCachedMap(locIP.latitude, locIP.longitude);
+                    let locIP = this.ext.locationIP;
+                    if (locIP) {
+                        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem("IP Addresses (Click to copy)"));
                         
-                        let mapWidget = new St.Widget({
-                            style: `background-image: url('file://${mapUrl}'); background-size: cover; border-radius: 8px;`,
-                            width: 250,
-                            height: 150,
-                            x_expand: true,
-                            y_expand: true
-                        });
-                        mapImageBtn.add_child(mapWidget);
+                        if (locIP.ipv4) {
+                            let v4Btn = new PopupMenu.PopupImageMenuItem(`IPv4: ${locIP.ipv4}`, this.ext.getIcon("ip.svg"), { style_class: 'ipMenuItem'});
+                            v4Btn.connect('activate', () => copyTextFunction(locIP.ipv4));
+                            this.menu.addMenuItem(v4Btn);
+                        }
+                        
+                        if (locIP.ipv6) {
+                            let v6Btn = new PopupMenu.PopupImageMenuItem(`IPv6: ${locIP.ipv6}`, this.ext.getIcon("ip.svg"), { style_class: 'ipMenuItem'});
+                            v6Btn.connect('activate', () => copyTextFunction(locIP.ipv6));
+                            this.menu.addMenuItem(v6Btn);
+                        }
+                        
+                        if (!locIP.ipv4 && !locIP.ipv6 && locIP.primaryIp) {
+                            let pBtn = new PopupMenu.PopupImageMenuItem(`${locIP.primaryIp}`, this.ext.getIcon("ip.svg"), { style_class: 'ipMenuItem'});
+                            pBtn.connect('activate', () => copyTextFunction(locIP.primaryIp));
+                            this.menu.addMenuItem(pBtn);
+                        }
 
-                        let mapsUrl = `https://maps.google.com/maps?q=${locIP.latitude},${locIP.longitude}`;
-                        mapImageBtn.connect('activate', () => {           
-                            GLib.spawn_command_line_async(`xdg-open "${mapsUrl}"`);
-                            return Clutter.EVENT_PROPAGATE;
-                        });
+                        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem("Network Details"));
 
-                        this.menu.addMenuItem(mapImageBtn);   
+                        if (locIP.org || locIP.asn) {
+                            let orgText = locIP.org ? locIP.org : locIP.asn;
+                            let orgBtn = new PopupMenu.PopupImageMenuItem(orgText, this.ext.getIcon("company.svg"), {});
+                            orgBtn.connect('activate', () => copyTextFunction(orgText));
+                            this.menu.addMenuItem(orgBtn);           
+                        }
+
+                        if (locIP.timezone) {           
+                            let tzBtn = new PopupMenu.PopupImageMenuItem(locIP.timezone, this.ext.getIcon("timezone.svg"), {});
+                            tzBtn.connect('activate', () => copyTextFunction(locIP.timezone));
+                            this.menu.addMenuItem(tzBtn);           
+                        }
+
+                        let flagIcon = this.ext.getIcon(await this.ext.getCachedFlag(locIP.countryCode), true);
+                        let countryText = `${locIP.countryName} (${locIP.countryCode}), ${locIP.cityName}`;
+                        let countryBtn = new PopupMenu.PopupImageMenuItem(countryText, flagIcon, {});
+                        countryBtn.connect('activate', () => copyTextFunction(countryText));
+                        this.menu.addMenuItem(countryBtn);         
+
+                        if (locIP.latitude && locIP.longitude) {
+                            let mapImageBtn = new PopupMenu.PopupBaseMenuItem({
+                                style_class: 'mapMenuItem',
+                                reactive: true
+                            });
+
+                            let mapUrl = await this.ext.getCachedMap(locIP.latitude, locIP.longitude);
+
+                            let mapContainer = new St.Widget({
+                                style: `background-image: url('file://${mapUrl}'); background-size: cover; border-radius: 8px;`,
+                                width: 256,
+                                height: 256,
+                                layout_manager: new Clutter.BinLayout(),
+                                x_expand: true,
+                                y_expand: true
+                            });
+
+                            let marker = new St.Widget({
+                                style: `
+                                    background-color: #f38ba8;
+                                    border: 2px solid white;
+                                    border-radius: 999px;
+                                    width: 14px;
+                                    height: 14px;
+                                    box-shadow: 0 2px 8px rgba(0,0,0,0.6);
+                                `,
+                                width: 14,
+                                height: 14,
+                                x_align: Clutter.ActorAlign.CENTER,
+                                y_align: Clutter.ActorAlign.CENTER
+                            });
+
+                            mapContainer.add_child(marker);
+                            mapImageBtn.add_child(mapContainer);
+
+                            let mapProvider = this.ext.settings.get_string('map-provider');
+                            let mapsUrl = `https://www.google.com/maps?q=$${locIP.latitude},${locIP.longitude}`;
+                            
+                            if (mapProvider === 'osm') {
+                                mapsUrl = `https://www.openstreetmap.org/?mlat=${locIP.latitude}&mlon=${locIP.longitude}#map=12/${locIP.latitude}/${locIP.longitude}`;
+                            } else if (mapProvider === 'apple') {
+                                mapsUrl = `https://maps.apple.com/?ll=${locIP.latitude},${locIP.longitude}`;
+                            }
+
+                            mapImageBtn.connect('activate', () => {
+                                GLib.spawn_command_line_async(`xdg-open "${mapsUrl}"`);
+                                return Clutter.EVENT_PROPAGATE;
+                            });
+
+                            this.menu.addMenuItem(mapImageBtn);   
+                        }
+                        
+                        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+                        let historyItem = new PopupMenu.PopupImageMenuItem("View IP History", 'document-open-recent-symbolic');
+                        historyItem.connect('activate', () => {
+                            let dialog = new HistoryDialog(this.ext);
+                            dialog.open();
+                        });
+                        this.menu.addMenuItem(historyItem);
+                        
+                        let settingsItem = new PopupMenu.PopupImageMenuItem("Settings", 'preferences-system-symbolic');
+                        settingsItem.connect('activate', () => {
+                            this.ext.openPreferences();
+                        });
+                        this.menu.addMenuItem(settingsItem);
                     }
-                    
-                    this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-                    let settingsItem = new PopupMenu.PopupMenuItem("Extension Settings...");
-                    settingsItem.connect('activate', () => {
-                        this.ext.openPreferences();
-                    });
-                    this.menu.addMenuItem(settingsItem);
+                    this.menu.toggle();            
                 }
-                this.menu.toggle();            
+            } catch (err) {
+                this.ext.lg(`Error in _onButtonClicked: ${err}`);
             }
         }
     }
@@ -218,26 +257,43 @@ export default class ExternalIPExtension extends Extension {
         return null;
     }
 
-    notify(title, msg) {    
-        let source = new MessageTray.Source(title, "network-transmit-receive-symbolic");
-        this.notification_msg_sources.add(source);
-        Main.messageTray.add(source);
+    notify(title, msg) {
+        try {
+            let source = new MessageTray.Source({
+                title: title,
+                iconName: "network-transmit-receive-symbolic"
+            });
+            this.notification_msg_sources.add(source);
+            Main.messageTray.add(source);
 
-        let notification = new MessageTray.Notification(source, title, msg, {        
-            bannerMarkup: true,
-            gicon: this.popup_icon
-        });          
-        
-        notification.connect('destroy', (destroyed_source) => {
-            this.notification_msg_sources.delete(destroyed_source.source);
-        });
+            let notification = new MessageTray.Notification({
+                source: source,
+                title: title,
+                body: msg
+            });          
+            
+            notification.connect('destroy', () => {
+                this.notification_msg_sources.delete(source);
+            });
 
-        source.showNotification(notification);
+            source.addNotification(notification);
+        } catch (e) {
+            this.lg(`Failed to display notification: ${e}`);
+        }
     }
 
-    async refreshIP() {
+    getFlagEmoji(countryCode) {
+        if (!countryCode || countryCode.length !== 2) return "";
+        const codePoints = countryCode
+            .toUpperCase()
+            .split('')
+            .map(char => 127397 + char.charCodeAt());
+        return String.fromCodePoint(...codePoints);
+    }
+
+    async refreshIP(force = false) {
         let t = new Date().getTime();
-        if (t - this.lastCheck <= this.minTimeBetweenChecks * 1000) return true;
+        if (!force && (t - this.lastCheck <= this.minTimeBetweenChecks * 1000)) return true;
         this.lastCheck = t;
 
         let [geoResp, v4Resp, v6Resp] = await Promise.all([
@@ -273,9 +329,14 @@ export default class ExternalIPExtension extends Extension {
             let primaryChanged = this.locationIP && this.locationIP.primaryIp !== newLocationIP.primaryIp;
             this.locationIP = newLocationIP;
 
+            this.historyManager.addEntryIfNeeded(this.locationIP);
+
             if (primaryChanged) {
                 this.lg('Note: External IP address has been changed into ' + this.locationIP.primaryIp);
-                this.notify('External IP Address', 'Has been changed to ' + this.locationIP.primaryIp);
+                if (this.settings.get_boolean('show-notifications')) {
+                    let emoji = this.getFlagEmoji(this.locationIP.countryCode);
+                    this.notify('IP Change Detected', `${this.locationIP.primaryIp}\n${emoji} ${this.locationIP.cityName}, ${this.locationIP.countryName}`);
+                }
             }
 
             this.lg(`Resolved IPs -> v4: ${this.locationIP.ipv4}, v6: ${this.locationIP.ipv6}`);
@@ -299,32 +360,58 @@ export default class ExternalIPExtension extends Extension {
         }    
     }
 
+    async _purgeCache(folderName, maxFiles = 20) {
+        try {
+            let dir = this.dir.get_child(folderName);
+            if (!dir.query_exists(null)) return;
+
+            let enumerator = await dir.enumerate_children_async('standard::*', Gio.FileQueryInfoFlags.NONE, GLib.PRIORITY_DEFAULT, null);
+            let files = [];
+            
+            while (true) {
+                let infos = await enumerator.next_files_async(10, GLib.PRIORITY_DEFAULT, null);
+                if (infos.length === 0) break;
+                for (let info of infos) {
+                    if (info.get_file_type() === Gio.FileType.REGULAR) {
+                        files.push({
+                            file: dir.get_child(info.get_name()),
+                            time: info.get_modification_date_time().to_unix()
+                        });
+                    }
+                }
+            }
+            
+            files.sort((a, b) => a.time - b.time);
+            
+            if (files.length > maxFiles) {
+                let toDelete = files.length - maxFiles;
+                for (let i = 0; i < toDelete; i++) {
+                    files[i].file.delete_async(GLib.PRIORITY_DEFAULT, null, null);
+                }
+            }
+        } catch (e) {
+            this.lg(`Cache purge error: ${e}`);
+        }
+    }
+
     async getCachedMap(lat, lon) {    
         let mapsDir = this.dir.get_child('maps');
         if (!mapsDir.query_exists(null)) mapsDir.make_directory_with_parents(null);
 
-        let mapFileDestination = mapsDir.get_path() + `/${lat}_${lon}.svg`;
+        let zoom = 12;
+        let x = Math.floor((lon + 180) / 360 * Math.pow(2, zoom));
+        let latRad = lat * Math.PI / 180;
+        let y = Math.floor((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * Math.pow(2, zoom));
+
+        let mapFileDestination = mapsDir.get_path() + `/${lat}_${lon}_${zoom}.png`;
         let file = Gio.File.new_for_path(mapFileDestination);
 
         if (!file.query_exists(null)) {
-            let svgContent = `<svg width="250" height="150" viewBox="0 0 250 150" xmlns="http://www.w3.org/2000/svg">
-                <rect width="250" height="150" fill="#1e1e2e" rx="8"/>
-                <g stroke="#313244" stroke-width="1">
-                    <line x1="0" y1="75" x2="250" y2="75" />
-                    <line x1="125" y1="0" x2="125" y2="150" />
-                </g>
-                <circle cx="125" cy="75" r="40" fill="none" stroke="#45475a" stroke-width="1" stroke-dasharray="4 4"/>
-                <circle cx="125" cy="75" r="20" fill="none" stroke="#45475a" stroke-width="1"/>
-                <circle cx="125" cy="75" r="5" fill="#f38ba8"/>
-                <circle cx="125" cy="75" r="15" fill="#f38ba8" opacity="0.3">
-                    <animate attributeName="r" values="5;25" dur="2s" repeatCount="indefinite" />
-                    <animate attributeName="opacity" values="0.8;0" dur="2s" repeatCount="indefinite" />
-                </circle>
-                <text x="10" y="25" fill="#cdd6f4" font-family="monospace" font-size="12" font-weight="bold">LOCATION LOCK</text>
-                <text x="10" y="125" fill="#a6adc8" font-family="monospace" font-size="11">LAT: ${lat}</text>
-                <text x="10" y="140" fill="#a6adc8" font-family="monospace" font-size="11">LON: ${lon}</text>
-            </svg>`;
-            file.replace_contents(svgContent, null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null);
+            let url = `https://tile.openstreetmap.org/${zoom}/${x}/${y}.png`;
+            let bytes = await this.httpRequestBytes(url); 
+            if (bytes) {
+                file.replace_contents(bytes.get_data(), null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null);
+            }
         }
         return mapFileDestination;
     }
@@ -341,9 +428,9 @@ export default class ExternalIPExtension extends Extension {
 
         if (!file.query_exists(null)) {
             let url = extCountryFlagService.replace("<countrycode>", country);
-            let bytes = await this.httpRequestBytes(url);
+            let bytes = await this.httpRequestBytes(url); 
             if (bytes) {
-                file.replace_contents_bytes_async(bytes, null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null, null);
+                file.replace_contents(bytes.get_data(), null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null);
             }
         }
         return iconFileDestination;
@@ -363,17 +450,28 @@ export default class ExternalIPExtension extends Extension {
 
     _onNetworkStatusChanged(monitor, network_available) {        
         if (network_available && !this.isIdle) {        
-            this.lg("Network event has been triggered. Re-check ext. IP");
+            this.lg("Network event triggered. Scheduling rapid IP re-check.");
             
             if (this.networkEventRefreshLoopID) {
-                GLib.Source.remove(this.networkEventRefreshLoopID);
+                try { GLib.Source.remove(this.networkEventRefreshLoopID); } catch(e) {}
+                this.networkEventRefreshLoopID = null;
             }
 
-            this.networkEventRefreshLoopID = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, this.networkEventRefreshTimeout, () => {         
-                this.refreshIP();
-                this.networkEventRefreshLoopID = null;
+            let attempts = 0;
+            let tryRefresh = () => {
+                this.refreshIP(true).then(success => {
+                    if (!success && attempts < 5) {
+                        attempts++;
+                        this.lg(`Rapid refresh attempt ${attempts} failed. Retrying in 2s...`);
+                        this.networkEventRefreshLoopID = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 2, tryRefresh);
+                    } else {
+                        this.networkEventRefreshLoopID = null;
+                    }
+                });
                 return GLib.SOURCE_REMOVE;
-            });   
+            };
+
+            this.networkEventRefreshLoopID = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, tryRefresh);   
         }
     }
 
@@ -381,7 +479,11 @@ export default class ExternalIPExtension extends Extension {
         this.disabled = false;
         this.settings = this.getSettings();
         
+        this.historyManager = new HistoryManager(this.dir);
         this.popup_icon = this.getIcon("ip.svg");
+
+        this._purgeCache('maps', 20);
+        this._purgeCache('flags', 20);
 
         if (!this.panelButton) {
             this.panelButton = new Indicator(this);
@@ -429,12 +531,12 @@ export default class ExternalIPExtension extends Extension {
         }
 
         if (this.networkEventRefreshLoopID) {
-            GLib.Source.remove(this.networkEventRefreshLoopID);
+            try { GLib.Source.remove(this.networkEventRefreshLoopID); } catch(e) {}
             this.networkEventRefreshLoopID = null;
         }
 
         if (this.sourceLoopID) {
-            GLib.Source.remove(this.sourceLoopID);
+            try { GLib.Source.remove(this.sourceLoopID); } catch(e) {}
             this.sourceLoopID = null;
         }
         
@@ -443,5 +545,6 @@ export default class ExternalIPExtension extends Extension {
         }
         
         this.settings = null;
+        this.historyManager = null;
     }
 }
