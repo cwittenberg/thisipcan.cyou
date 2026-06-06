@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 Christian Wittenberg
+ * Copyright (c) 2026 Christian Wittenberg
  * History Manager & Dialog Overlay
  */
 
@@ -11,29 +11,39 @@ import GLib from 'gi://GLib';
 import * as ModalDialog from 'resource:///org/gnome/shell/ui/modalDialog.js';
 
 export class HistoryManager {
-    constructor(dir) {
+    constructor(dir, ext) {
         this.file = dir.get_child('history.json');
+        this.ext = ext;
     }
 
-    readHistory() {
-        try {
-            if (this.file.query_exists(null)) {
-                let [success, contents] = this.file.load_contents(null);
-                if (success) {
-                    let decoder = new TextDecoder('utf-8');
-                    return JSON.parse(decoder.decode(contents));
-                }
+    async readHistoryAsync() {
+        return new Promise((resolve) => {
+            if (!this.file.query_exists(null)) {
+                resolve([]);
+                return;
             }
-        } catch (e) {
-            console.log(`[ShowExternalIP] History read error: ${e}`);
-        }
-        return [];
+
+            this.file.load_contents_async(null, (file, res) => {
+                try {
+                    let [success, contents] = file.load_contents_finish(res);
+                    if (success) {
+                        let decoder = new TextDecoder('utf-8');
+                        resolve(JSON.parse(decoder.decode(contents)));
+                    } else {
+                        resolve([]);
+                    }
+                } catch (e) {
+                    if (this.ext) this.ext.lg(`History read error: ${e}`);
+                    resolve([]);
+                }
+            });
+        });
     }
 
-    addEntryIfNeeded(locIP) {
-        let history = this.readHistory();
+    async addEntryIfNeeded(locIP) {
+        let history = await this.readHistoryAsync();
+        
         if (history.length > 0) {
-            // Prevent duplicate contiguous entries
             if (history[0].primaryIp === locIP.primaryIp) return;
         }
         
@@ -43,16 +53,18 @@ export class HistoryManager {
         };
         
         history.unshift(entry);
-        // Keep cache clean - max 100 entries
         if (history.length > 100) history = history.slice(0, 100);
         
-        try {
-            let content = JSON.stringify(history, null, 2);
-            let uint8Array = new TextEncoder().encode(content);
-            this.file.replace_contents(uint8Array, null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null);
-        } catch (e) {
-            console.log(`[ShowExternalIP] History write error: ${e}`);
-        }
+        let content = JSON.stringify(history, null, 2);
+        let bytes = new GLib.Bytes(new TextEncoder().encode(content));
+        
+        this.file.replace_contents_bytes_async(bytes, null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null, (f, res) => {
+            try {
+                f.replace_contents_finish(res);
+            } catch (e) {
+                if (this.ext) this.ext.lg(`History write error: ${e}`);
+            }
+        });
     }
 }
 
@@ -123,28 +135,30 @@ export const HistoryDialog = GObject.registerClass(
                     }
                 }
 
-                try {
-                    let downloadsDir = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOWNLOAD);
-                    if (!downloadsDir) downloadsDir = GLib.get_home_dir();
-                    
-                    let filename = `IP_History_${new Date().getTime()}.csv`;
-                    let path = GLib.build_filenamev([downloadsDir, filename]);
-                    let file = Gio.File.new_for_path(path);
-                    
-                    let uint8Array = new TextEncoder().encode(csvContent);
-                    file.replace_contents(uint8Array, null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null);
-
-                    exportBtn.set_label("Saved to Downloads!");
+                let downloadsDir = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOWNLOAD);
+                if (!downloadsDir) downloadsDir = GLib.get_home_dir();
+                
+                let filename = `IP_History_${new Date().getTime()}.csv`;
+                let path = GLib.build_filenamev([downloadsDir, filename]);
+                let file = Gio.File.new_for_path(path);
+                
+                let bytes = new GLib.Bytes(new TextEncoder().encode(csvContent));
+                
+                file.replace_contents_bytes_async(bytes, null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null, (f, res) => {
+                    try {
+                        f.replace_contents_finish(res);
+                        exportBtn.set_label("Saved to Downloads!");
+                    } catch (err) {
+                        this.ext.lg(`CSV Export Error: ${err}`);
+                        exportBtn.set_label("Export Failed!");
+                    }
                     GLib.timeout_add(GLib.PRIORITY_DEFAULT, 2000, () => {
                         if (exportBtn && exportBtn.get_parent && exportBtn.get_parent()) {
                             exportBtn.set_label("Export CSV");
                         }
                         return GLib.SOURCE_REMOVE;
                     });
-                } catch (err) {
-                    this.ext.lg(`CSV Export Error: ${err}`);
-                    exportBtn.set_label("Export Failed!");
-                }
+                });
             });
 
             searchRow.add_child(searchEntry);
@@ -164,119 +178,124 @@ export const HistoryDialog = GObject.registerClass(
                 style: 'spacing: 12px;'
             });
 
-            let history = this.ext.historyManager.readHistory();
-            
-            if (history.length === 0) {
-                historyList.add_child(new St.Label({ text: "No history available yet." }));
-            }
+            this.ext.historyManager.readHistoryAsync().then(history => {
+                if (history.length === 0) {
+                    historyList.add_child(new St.Label({ text: "No history available yet." }));
+                }
 
-            let withCopyConfirm = (btn, textToCopy, originalLabel) => {
-                btn.connect('clicked', () => {
-                    if (textToCopy && textToCopy !== "N/A") {
-                        St.Clipboard.get_default().set_text(St.ClipboardType.CLIPBOARD, textToCopy);
-                        btn.set_label("Copied ✔");
-                        GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1500, () => {
-                            if (btn && btn.get_parent && btn.get_parent()) {
-                                btn.set_label(originalLabel);
-                            }
-                            return GLib.SOURCE_REMOVE;
-                        });
-                    }
-                });
-            };
+                let withCopyConfirm = (btn, textToCopy, originalLabel) => {
+                    btn.connect('clicked', () => {
+                        if (textToCopy && textToCopy !== "N/A") {
+                            St.Clipboard.get_default().set_text(St.ClipboardType.CLIPBOARD, textToCopy);
+                            btn.set_label("Copied ✔");
+                            GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1500, () => {
+                                if (btn && btn.get_parent && btn.get_parent()) {
+                                    btn.set_label(originalLabel);
+                                }
+                                return GLib.SOURCE_REMOVE;
+                            });
+                        }
+                    });
+                };
 
-            let mapProvider = this.ext.settings.get_string('map-provider');
+                let mapProvider = this.ext.settings.get_string('map-provider');
 
-            for (let entry of history) {
-                let date = new Date(entry.timestamp);
-                let dateStr = `${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
-                let fullSearchString = `${dateStr} ${entry.ipv4} ${entry.ipv6} ${entry.countryName} ${entry.countryCode} ${entry.cityName} ${entry.org} ${entry.asn} ${entry.latitude} ${entry.longitude}`.toLowerCase();
-                
-                let entryBox = new St.BoxLayout({
-                    vertical: true,
-                    style: 'background-color: rgba(255,255,255,0.05); border-radius: 8px; padding: 16px;'
-                });
+                for (let entry of history) {
+                    let date = new Date(entry.timestamp);
+                    let dateStr = `${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
+                    let fullSearchString = `${dateStr} ${entry.ipv4} ${entry.ipv6} ${entry.countryName} ${entry.countryCode} ${entry.cityName} ${entry.org} ${entry.asn} ${entry.latitude} ${entry.longitude}`.toLowerCase();
+                    
+                    let entryBox = new St.BoxLayout({
+                        vertical: true,
+                        style: 'background-color: rgba(255,255,255,0.05); border-radius: 8px; padding: 16px;'
+                    });
 
-                let headerBox = new St.BoxLayout({
-                    vertical: false,
-                    x_expand: true
-                });
-                
-                let dateLabel = new St.Label({
-                    text: dateStr,
-                    style: 'font-weight: bold; font-size: 16px; color: #a6adc8;',
-                    y_align: Clutter.ActorAlign.CENTER,
-                    x_expand: true
-                });
-                
-                let copyAllBtn = new St.Button({
-                    label: "Copy Full Record",
-                    style: 'background-color: #313244; color: #cdd6f4; border-radius: 6px; padding: 6px 12px; font-size: 13px; font-weight: bold;',
-                    reactive: true,
-                    track_hover: true,
-                    y_align: Clutter.ActorAlign.CENTER
-                });
-                
-                let fullText = `Date: ${dateStr}\nIPv4: ${entry.ipv4 || 'N/A'}\nIPv6: ${entry.ipv6 || 'N/A'}\nLocation: ${entry.countryName}, ${entry.cityName}\nISP: ${entry.org || entry.asn || 'N/A'}\nCoordinates: ${entry.latitude}, ${entry.longitude}`;
-                withCopyConfirm(copyAllBtn, fullText, "Copy Full Record");
-                
-                headerBox.add_child(dateLabel);
-                headerBox.add_child(copyAllBtn);
-                entryBox.add_child(headerBox);
+                    let headerBox = new St.BoxLayout({
+                        vertical: false,
+                        x_expand: true
+                    });
+                    
+                    let dateLabel = new St.Label({
+                        text: dateStr,
+                        style: 'font-weight: bold; font-size: 16px; color: #a6adc8;',
+                        y_align: Clutter.ActorAlign.CENTER,
+                        x_expand: true
+                    });
+                    
+                    let copyAllBtn = new St.Button({
+                        label: "Copy Full Record",
+                        style: 'background-color: #313244; color: #cdd6f4; border-radius: 6px; padding: 6px 12px; font-size: 13px; font-weight: bold;',
+                        reactive: true,
+                        track_hover: true,
+                        y_align: Clutter.ActorAlign.CENTER
+                    });
+                    
+                    let fullText = `Date: ${dateStr}\nIPv4: ${entry.ipv4 || 'N/A'}\nIPv6: ${entry.ipv6 || 'N/A'}\nLocation: ${entry.countryName}, ${entry.cityName}\nISP: ${entry.org || entry.asn || 'N/A'}\nCoordinates: ${entry.latitude}, ${entry.longitude}`;
+                    withCopyConfirm(copyAllBtn, fullText, "Copy Full Record");
+                    
+                    headerBox.add_child(dateLabel);
+                    headerBox.add_child(copyAllBtn);
+                    entryBox.add_child(headerBox);
 
-                let ipBox = new St.BoxLayout({ vertical: false, style: 'spacing: 8px; margin-top: 12px;' });
-                
-                let v4Box = new St.BoxLayout({ vertical: false, style: 'spacing: 6px;' });
-                v4Box.add_child(new St.Label({ text: "IPv4:", style: 'color: #89b4fa; font-weight: bold;' }));
-                let v4LabelStr = entry.ipv4 || "N/A";
-                let v4Btn = new St.Button({ label: v4LabelStr, style: 'color: #cdd6f4; text-decoration: underline;', reactive: true });
-                withCopyConfirm(v4Btn, entry.ipv4, v4LabelStr);
-                v4Box.add_child(v4Btn);
+                    let ipBox = new St.BoxLayout({ vertical: false, style: 'spacing: 8px; margin-top: 12px;' });
+                    
+                    let v4Box = new St.BoxLayout({ vertical: false, style: 'spacing: 6px;' });
+                    v4Box.add_child(new St.Label({ text: "IPv4:", style: 'color: #89b4fa; font-weight: bold;' }));
+                    let v4LabelStr = entry.ipv4 || "N/A";
+                    let v4Btn = new St.Button({ label: v4LabelStr, style: 'color: #cdd6f4; text-decoration: underline;', reactive: true });
+                    withCopyConfirm(v4Btn, entry.ipv4, v4LabelStr);
+                    v4Box.add_child(v4Btn);
 
-                let v6Box = new St.BoxLayout({ vertical: false, style: 'spacing: 6px; margin-left: 24px;' });
-                v6Box.add_child(new St.Label({ text: "IPv6:", style: 'color: #89b4fa; font-weight: bold;' }));
-                let v6LabelStr = entry.ipv6 || "N/A";
-                let v6Btn = new St.Button({ label: v6LabelStr, style: 'color: #cdd6f4; text-decoration: underline;', reactive: true });
-                withCopyConfirm(v6Btn, entry.ipv6, v6LabelStr);
-                v6Box.add_child(v6Btn);
+                    let v6Box = new St.BoxLayout({ vertical: false, style: 'spacing: 6px; margin-left: 24px;' });
+                    v6Box.add_child(new St.Label({ text: "IPv6:", style: 'color: #89b4fa; font-weight: bold;' }));
+                    let v6LabelStr = entry.ipv6 || "N/A";
+                    let v6Btn = new St.Button({ label: v6LabelStr, style: 'color: #cdd6f4; text-decoration: underline;', reactive: true });
+                    withCopyConfirm(v6Btn, entry.ipv6, v6LabelStr);
+                    v6Box.add_child(v6Btn);
 
-                ipBox.add_child(v4Box);
-                ipBox.add_child(v6Box);
+                    ipBox.add_child(v4Box);
+                    ipBox.add_child(v6Box);
 
-                entryBox.add_child(ipBox);
+                    entryBox.add_child(ipBox);
 
-                let locBox = new St.BoxLayout({ vertical: false, style: 'spacing: 8px; margin-top: 8px;' });
-                locBox.add_child(new St.Label({ text: "Location:", style: 'color: #f9e2af; font-weight: bold;' }));
-                locBox.add_child(new St.Label({ text: `${entry.countryName} (${entry.countryCode}), ${entry.cityName}` }));
-                entryBox.add_child(locBox);
+                    let locBox = new St.BoxLayout({ vertical: false, style: 'spacing: 8px; margin-top: 8px;' });
+                    locBox.add_child(new St.Label({ text: "Location:", style: 'color: #f9e2af; font-weight: bold;' }));
+                    locBox.add_child(new St.Label({ text: `${entry.countryName} (${entry.countryCode}), ${entry.cityName}` }));
+                    entryBox.add_child(locBox);
 
-                let ispBox = new St.BoxLayout({ vertical: false, style: 'spacing: 8px; margin-top: 8px;' });
-                ispBox.add_child(new St.Label({ text: "ISP:", style: 'color: #f9e2af; font-weight: bold;' }));
-                ispBox.add_child(new St.Label({ text: `${entry.org || entry.asn || 'Unknown'}` }));
-                entryBox.add_child(ispBox);
+                    let ispBox = new St.BoxLayout({ vertical: false, style: 'spacing: 8px; margin-top: 8px;' });
+                    ispBox.add_child(new St.Label({ text: "ISP:", style: 'color: #f9e2af; font-weight: bold;' }));
+                    ispBox.add_child(new St.Label({ text: `${entry.org || entry.asn || 'Unknown'}` }));
+                    entryBox.add_child(ispBox);
 
-                let mapBox = new St.BoxLayout({ vertical: false, style: 'spacing: 8px; margin-top: 8px;' });
-                mapBox.add_child(new St.Label({ text: "Coordinates:", style: 'color: #f38ba8; font-weight: bold;' }));
-                
-                let providerName = mapProvider === 'osm' ? 'OSM' : (mapProvider === 'apple' ? 'Apple Maps' : 'Google Maps');
-                let mapBtn = new St.Button({ label: `${entry.latitude}, ${entry.longitude} (Open in ${providerName})`, style: 'color: #cdd6f4; text-decoration: underline;', reactive: true });
-                
-                mapBtn.connect('clicked', () => {
-                    let mapsUrl = `https://www.google.com/maps?q=$${entry.latitude},${entry.longitude}`;
-                    if (mapProvider === 'osm') {
-                        mapsUrl = `https://www.openstreetmap.org/?mlat=${entry.latitude}&mlon=${entry.longitude}#map=12/${entry.latitude}/${entry.longitude}`;
-                    } else if (mapProvider === 'apple') {
-                        mapsUrl = `https://maps.apple.com/?ll=${entry.latitude},${entry.longitude}`;
-                    }
-                    GLib.spawn_command_line_async(`xdg-open "${mapsUrl}"`);
-                });
-                
-                mapBox.add_child(mapBtn);
-                entryBox.add_child(mapBox);
+                    let mapBox = new St.BoxLayout({ vertical: false, style: 'spacing: 8px; margin-top: 8px;' });
+                    mapBox.add_child(new St.Label({ text: "Coordinates:", style: 'color: #f38ba8; font-weight: bold;' }));
+                    
+                    let providerName = mapProvider === 'osm' ? 'OSM' : (mapProvider === 'apple' ? 'Apple Maps' : 'Google Maps');
+                    let mapBtn = new St.Button({ label: `${entry.latitude}, ${entry.longitude} (Open in ${providerName})`, style: 'color: #cdd6f4; text-decoration: underline;', reactive: true });
+                    
+                    mapBtn.connect('clicked', () => {
+                        let mapsUrl = `https://www.google.com/maps?q=$${entry.latitude},${entry.longitude}`;
+                        if (mapProvider === 'osm') {
+                            mapsUrl = `https://www.openstreetmap.org/?mlat=${entry.latitude}&mlon=${entry.longitude}#map=12/${entry.latitude}/${entry.longitude}`;
+                        } else if (mapProvider === 'apple') {
+                            mapsUrl = `https://maps.apple.com/?ll=${entry.latitude},${entry.longitude}`;
+                        }
+                        
+                        try {
+                            Gio.app_info_launch_default_for_uri(mapsUrl, null);
+                        } catch (err) {
+                            this.ext.lg(`Map Link Error: ${err}`);
+                        }
+                    });
+                    
+                    mapBox.add_child(mapBtn);
+                    entryBox.add_child(mapBox);
 
-                this.historyItems.push({ widget: entryBox, searchText: fullSearchString, data: entry });
-                historyList.add_child(entryBox);
-            }
+                    this.historyItems.push({ widget: entryBox, searchText: fullSearchString, data: entry });
+                    historyList.add_child(entryBox);
+                }
+            });
 
             scrollView.add_child(historyList);
             contentBox.add_child(scrollView);

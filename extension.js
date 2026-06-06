@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2024 Christian Wittenberg
+ * Copyright (c) 2022-2026 Christian Wittenberg
  * GNOME 50 Port
  */
 
@@ -169,7 +169,11 @@ const Indicator = GObject.registerClass(
                             }
 
                             mapImageBtn.connect('activate', () => {
-                                GLib.spawn_command_line_async(`xdg-open "${mapsUrl}"`);
+                                try {
+                                    Gio.app_info_launch_default_for_uri(mapsUrl, null);
+                                } catch (e) {
+                                    this.ext.lg(`Failed to launch map URL: ${e}`);
+                                }
                                 return Clutter.EVENT_PROPAGATE;
                             });
 
@@ -224,7 +228,7 @@ export default class ExternalIPExtension extends Extension {
         if (!this.settings || !this.settings.get_boolean('enable-debug-logs')) return;
         let now = GLib.DateTime.new_now_local();
         let ms = now.get_microsecond().toString().padStart(6, '0').substring(0, 3);
-        console.log(`[ShowExternalIP] [${now.format('%H:%M:%S')}.${ms}] ${s}`);
+        console.warn(`[ShowExternalIP] [${now.format('%H:%M:%S')}.${ms}] ${s}`);
     }
 
     async httpRequest(url) {
@@ -365,30 +369,41 @@ export default class ExternalIPExtension extends Extension {
             let dir = this.dir.get_child(folderName);
             if (!dir.query_exists(null)) return;
 
-            let enumerator = await dir.enumerate_children_async('standard::*', Gio.FileQueryInfoFlags.NONE, GLib.PRIORITY_DEFAULT, null);
-            let files = [];
-            
-            while (true) {
-                let infos = await enumerator.next_files_async(10, GLib.PRIORITY_DEFAULT, null);
-                if (infos.length === 0) break;
-                for (let info of infos) {
-                    if (info.get_file_type() === Gio.FileType.REGULAR) {
-                        files.push({
-                            file: dir.get_child(info.get_name()),
-                            time: info.get_modification_date_time().to_unix()
+            dir.enumerate_children_async('standard::*', Gio.FileQueryInfoFlags.NONE, GLib.PRIORITY_DEFAULT, null, (source, res) => {
+                try {
+                    let enumerator = source.enumerate_children_finish(res);
+                    let files = [];
+                    
+                    let processNext = () => {
+                        enumerator.next_files_async(10, GLib.PRIORITY_DEFAULT, null, (enumSource, res2) => {
+                            let infos = enumSource.next_files_finish(res2);
+                            if (infos.length === 0) {
+                                files.sort((a, b) => a.time - b.time);
+                                if (files.length > maxFiles) {
+                                    let toDelete = files.length - maxFiles;
+                                    for (let i = 0; i < toDelete; i++) {
+                                        files[i].file.delete_async(GLib.PRIORITY_DEFAULT, null, null);
+                                    }
+                                }
+                                enumerator.close_async(GLib.PRIORITY_DEFAULT, null, null);
+                                return;
+                            }
+                            for (let info of infos) {
+                                if (info.get_file_type() === Gio.FileType.REGULAR) {
+                                    files.push({
+                                        file: dir.get_child(info.get_name()),
+                                        time: info.get_modification_date_time().to_unix()
+                                    });
+                                }
+                            }
+                            processNext();
                         });
-                    }
+                    };
+                    processNext();
+                } catch(e) {
+                    this.lg(`Cache enum error: ${e}`);
                 }
-            }
-            
-            files.sort((a, b) => a.time - b.time);
-            
-            if (files.length > maxFiles) {
-                let toDelete = files.length - maxFiles;
-                for (let i = 0; i < toDelete; i++) {
-                    files[i].file.delete_async(GLib.PRIORITY_DEFAULT, null, null);
-                }
-            }
+            });
         } catch (e) {
             this.lg(`Cache purge error: ${e}`);
         }
@@ -410,7 +425,12 @@ export default class ExternalIPExtension extends Extension {
             let url = `https://tile.openstreetmap.org/${zoom}/${x}/${y}.png`;
             let bytes = await this.httpRequestBytes(url); 
             if (bytes) {
-                file.replace_contents(bytes.get_data(), null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null);
+                return new Promise((resolve) => {
+                    file.replace_contents_bytes_async(bytes, null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null, (f, res) => {
+                        try { f.replace_contents_finish(res); } catch(e) { this.lg(`Map write error: ${e}`); }
+                        resolve(mapFileDestination);
+                    });
+                });
             }
         }
         return mapFileDestination;
@@ -430,7 +450,12 @@ export default class ExternalIPExtension extends Extension {
             let url = extCountryFlagService.replace("<countrycode>", country);
             let bytes = await this.httpRequestBytes(url); 
             if (bytes) {
-                file.replace_contents(bytes.get_data(), null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null);
+                return new Promise((resolve) => {
+                    file.replace_contents_bytes_async(bytes, null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null, (f, res) => {
+                        try { f.replace_contents_finish(res); } catch(e) { this.lg(`Flag write error: ${e}`); }
+                        resolve(iconFileDestination);
+                    });
+                });
             }
         }
         return iconFileDestination;
@@ -479,7 +504,7 @@ export default class ExternalIPExtension extends Extension {
         this.disabled = false;
         this.settings = this.getSettings();
         
-        this.historyManager = new HistoryManager(this.dir);
+        this.historyManager = new HistoryManager(this.dir, this);
         this.popup_icon = this.getIcon("ip.svg");
 
         this._purgeCache('maps', 20);
