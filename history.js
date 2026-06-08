@@ -85,13 +85,13 @@ export const HistoryDialog = GObject.registerClass(
             this.historyItems = []; 
             
             // Allow Escape key to close without needing the massive bottom buttons
-            this.connect('key-press-event', (actor, event) => {
+            this.connectObject('key-press-event', (actor, event) => {
                 if (event.get_key_symbol() === Clutter.KEY_Escape) {
                     this.close();
                     return Clutter.EVENT_STOP;
                 }
                 return Clutter.EVENT_PROPAGATE;
-            });
+            }, this);
 
             let contentBox = new St.BoxLayout({
                 vertical: true,
@@ -119,7 +119,7 @@ export const HistoryDialog = GObject.registerClass(
                 track_hover: true,
                 y_align: Clutter.ActorAlign.CENTER
             });
-            closeBtn.connect('clicked', () => this.close());
+            closeBtn.connectObject('clicked', () => this.close(), this);
 
             titleBox.add_child(title);
             titleBox.add_child(closeBtn);
@@ -139,7 +139,7 @@ export const HistoryDialog = GObject.registerClass(
                 can_focus: true
             });
             
-            searchEntry.clutter_text.connect('text-changed', () => {
+            searchEntry.clutter_text.connectObject('text-changed', () => {
                 let query = searchEntry.get_text().toLowerCase();
                 for (let item of this.historyItems) {
                     if (item.searchText.includes(query)) {
@@ -148,7 +148,7 @@ export const HistoryDialog = GObject.registerClass(
                         item.widget.hide();
                     }
                 }
-            });
+            }, this);
 
             let exportBtn = new St.Button({
                 label: "Export CSV",
@@ -159,7 +159,7 @@ export const HistoryDialog = GObject.registerClass(
                 y_align: Clutter.ActorAlign.CENTER
             });
 
-            exportBtn.connect('clicked', () => {
+            exportBtn.connectObject('clicked', () => {
                 let csvContent = "Date,IPv4,IPv6,Country,Country Code,City,ISP/Org,ASN,Latitude,Longitude\n";
                 
                 for (let item of this.historyItems) {
@@ -188,14 +188,27 @@ export const HistoryDialog = GObject.registerClass(
                         this.ext.lg(`CSV Export Error: ${err}`);
                         exportBtn.set_label("Export Failed!");
                     }
-                    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 2000, () => {
-                        if (exportBtn && exportBtn.get_parent && exportBtn.get_parent()) {
+                    
+                    if (this._exportTimeoutId) {
+                        GLib.Source.remove(this._exportTimeoutId);
+                    }
+                    
+                    this._exportTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 2000, () => {
+                        if (exportBtn) {
                             exportBtn.set_label("Export CSV");
                         }
+                        this._exportTimeoutId = null;
                         return GLib.SOURCE_REMOVE;
                     });
                 });
-            });
+            }, this);
+
+            exportBtn.connectObject('destroy', () => {
+                if (this._exportTimeoutId) {
+                    GLib.Source.remove(this._exportTimeoutId);
+                    this._exportTimeoutId = null;
+                }
+            }, this);
 
             searchRow.add_child(searchEntry);
             searchRow.add_child(exportBtn);
@@ -233,18 +246,31 @@ export const HistoryDialog = GObject.registerClass(
                 }
 
                 let withCopyConfirm = (btn, textToCopy, originalLabel) => {
-                    btn.connect('clicked', () => {
+                    btn.connectObject('clicked', () => {
                         if (textToCopy && textToCopy !== "N/A") {
                             St.Clipboard.get_default().set_text(St.ClipboardType.CLIPBOARD, textToCopy);
                             btn.set_label("Copied ✔");
-                            GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1500, () => {
-                                if (btn && btn.get_parent && btn.get_parent()) {
+                            
+                            if (btn._copyTimeoutId) {
+                                GLib.Source.remove(btn._copyTimeoutId);
+                            }
+                            
+                            btn._copyTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1500, () => {
+                                if (btn) {
                                     btn.set_label(originalLabel);
                                 }
+                                btn._copyTimeoutId = null;
                                 return GLib.SOURCE_REMOVE;
                             });
                         }
-                    });
+                    }, this);
+
+                    btn.connectObject('destroy', () => {
+                        if (btn._copyTimeoutId) {
+                            GLib.Source.remove(btn._copyTimeoutId);
+                            btn._copyTimeoutId = null;
+                        }
+                    }, this);
                 };
 
                 let mapProvider = this.ext.settings.get_string('map-provider');
@@ -324,8 +350,8 @@ export const HistoryDialog = GObject.registerClass(
                         reactive: true 
                     });
                     
-                    mapBtn.connect('clicked', () => {
-                        let mapsUrl = `https://maps.google.com/?q=${entry.latitude},${entry.longitude}`;
+                    mapBtn.connectObject('clicked', () => {
+                        let mapsUrl = `https://www.google.com/maps/search/?api=1&query=${entry.latitude},${entry.longitude}`;
                         if (mapProvider === 'osm') {
                             mapsUrl = `https://www.openstreetmap.org/?mlat=${entry.latitude}&mlon=${entry.longitude}#map=12/${entry.latitude}/${entry.longitude}`;
                         } else if (mapProvider === 'apple') {
@@ -337,7 +363,7 @@ export const HistoryDialog = GObject.registerClass(
                         } catch (err) {
                             this.ext.lg(`Map Link Error: ${err}`);
                         }
-                    });
+                    }, this);
                     actionsColBox.add_child(mapBtn);
 
                     rowBox.add_child(actionsColBox);

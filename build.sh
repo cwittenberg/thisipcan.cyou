@@ -6,8 +6,8 @@ OUTPUT_ZIP="${EXTENSION_UUID}.shell-extension.zip"
 
 echo "Building GNOME Extension: $EXTENSION_UUID"
 
-# Ensure all necessary folders exist
-mkdir -p img flags maps schemas
+# Ensure schemas folder exists
+mkdir -p schemas
 
 echo "[1/3] Compiling GSettings schemas..."
 glib-compile-schemas schemas/ || {
@@ -24,9 +24,6 @@ gnome-extensions pack . \
   --extra-source="schemas/" \
   --extra-source="history.js" \
   --extra-source="prefs.js" \
-  --extra-source="img" \
-  --extra-source="flags" \
-  --extra-source="maps" \
   --extra-source="stylesheet.css" \
   --extra-source="README.md" \
   --extra-source="LICENSE"

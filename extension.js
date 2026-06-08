@@ -6,7 +6,7 @@
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
-import Soup from 'gi://Soup?version=3.0';
+import Soup from 'gi://Soup';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
 
@@ -88,20 +88,20 @@ const Indicator = GObject.registerClass(
                 this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem("IP Addresses (Click to copy)"));
                 
                 if (locIP.ipv4) {
-                    let v4Btn = new PopupMenu.PopupImageMenuItem(`IPv4: ${locIP.ipv4}`, this.ext.getIcon("ip.svg"), { style_class: 'ipMenuItem'});
-                    v4Btn.connect('activate', () => copyTextFunction(locIP.ipv4));
+                    let v4Btn = new PopupMenu.PopupImageMenuItem(`IPv4: ${locIP.ipv4}`, 'network-server-symbolic', { style_class: 'ipMenuItem'});
+                    v4Btn.connectObject('activate', () => copyTextFunction(locIP.ipv4), this);
                     this.menu.addMenuItem(v4Btn);
                 }
                 
                 if (locIP.ipv6) {
-                    let v6Btn = new PopupMenu.PopupImageMenuItem(`IPv6: ${locIP.ipv6}`, this.ext.getIcon("ip.svg"), { style_class: 'ipMenuItem'});
-                    v6Btn.connect('activate', () => copyTextFunction(locIP.ipv6));
+                    let v6Btn = new PopupMenu.PopupImageMenuItem(`IPv6: ${locIP.ipv6}`, 'network-server-symbolic', { style_class: 'ipMenuItem'});
+                    v6Btn.connectObject('activate', () => copyTextFunction(locIP.ipv6), this);
                     this.menu.addMenuItem(v6Btn);
                 }
                 
                 if (!locIP.ipv4 && !locIP.ipv6 && locIP.primaryIp) {
-                    let pBtn = new PopupMenu.PopupImageMenuItem(`${locIP.primaryIp}`, this.ext.getIcon("ip.svg"), { style_class: 'ipMenuItem'});
-                    pBtn.connect('activate', () => copyTextFunction(locIP.primaryIp));
+                    let pBtn = new PopupMenu.PopupImageMenuItem(`${locIP.primaryIp}`, 'network-server-symbolic', { style_class: 'ipMenuItem'});
+                    pBtn.connectObject('activate', () => copyTextFunction(locIP.primaryIp), this);
                     this.menu.addMenuItem(pBtn);
                 }
 
@@ -109,21 +109,21 @@ const Indicator = GObject.registerClass(
 
                 if (locIP.org || locIP.asn) {
                     let orgText = locIP.org ? locIP.org : locIP.asn;
-                    let orgBtn = new PopupMenu.PopupImageMenuItem(orgText, this.ext.getIcon("company.svg"), {});
-                    orgBtn.connect('activate', () => copyTextFunction(orgText));
+                    let orgBtn = new PopupMenu.PopupImageMenuItem(orgText, 'emblem-shared-symbolic', {});
+                    orgBtn.connectObject('activate', () => copyTextFunction(orgText), this);
                     this.menu.addMenuItem(orgBtn);           
                 }
 
                 if (locIP.timezone) {           
-                    let tzBtn = new PopupMenu.PopupImageMenuItem(locIP.timezone, this.ext.getIcon("timezone.svg"), {});
-                    tzBtn.connect('activate', () => copyTextFunction(locIP.timezone));
+                    let tzBtn = new PopupMenu.PopupImageMenuItem(locIP.timezone, 'preferences-system-time-symbolic', {});
+                    tzBtn.connectObject('activate', () => copyTextFunction(locIP.timezone), this);
                     this.menu.addMenuItem(tzBtn);           
                 }
 
                 let flagIcon = this.ext.getIcon(await this.ext.getCachedFlag(locIP.countryCode), true);
                 let countryText = `${locIP.countryName} (${locIP.countryCode}), ${locIP.cityName}`;
                 let countryBtn = new PopupMenu.PopupImageMenuItem(countryText, flagIcon, {});
-                countryBtn.connect('activate', () => copyTextFunction(countryText));
+                countryBtn.connectObject('activate', () => copyTextFunction(countryText), this);
                 this.menu.addMenuItem(countryBtn);         
 
                 if (locIP.latitude && locIP.longitude) {
@@ -162,7 +162,7 @@ const Indicator = GObject.registerClass(
                     mapImageBtn.add_child(mapContainer);
 
                     let mapProvider = this.ext.settings.get_string('map-provider');
-                    let mapsUrl = `http://googleusercontent.com/maps.google.com/${locIP.latitude},${locIP.longitude}`;
+                    let mapsUrl = `https://www.google.com/maps/search/?api=1&query=${locIP.latitude},${locIP.longitude}`;
                     
                     if (mapProvider === 'osm') {
                         mapsUrl = `https://www.openstreetmap.org/?mlat=${locIP.latitude}&mlon=${locIP.longitude}#map=12/${locIP.latitude}/${locIP.longitude}`;
@@ -170,13 +170,13 @@ const Indicator = GObject.registerClass(
                         mapsUrl = `https://maps.apple.com/?ll=${locIP.latitude},${locIP.longitude}`;
                     }
 
-                    mapImageBtn.connect('activate', () => {
+                    mapImageBtn.connectObject('activate', () => {
                         try {
                             Gio.app_info_launch_default_for_uri(mapsUrl, null);
                         } catch (e) {
                             this.ext.lg(`Failed to launch map URL: ${e}`);
                         }
-                    });
+                    }, this);
 
                     this.menu.addMenuItem(mapImageBtn);   
                 }
@@ -184,16 +184,16 @@ const Indicator = GObject.registerClass(
                 this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
                 let historyItem = new PopupMenu.PopupImageMenuItem("View IP History", 'document-open-recent-symbolic');
-                historyItem.connect('activate', () => {
+                historyItem.connectObject('activate', () => {
                     let dialog = new HistoryDialog(this.ext);
                     dialog.open();
-                });
+                }, this);
                 this.menu.addMenuItem(historyItem);
                 
                 let settingsItem = new PopupMenu.PopupImageMenuItem("Settings", 'preferences-system-symbolic');
-                settingsItem.connect('activate', () => {
+                settingsItem.connectObject('activate', () => {
                     this.ext.openPreferences();
-                });
+                }, this);
                 this.menu.addMenuItem(settingsItem);
                 
             } catch (err) {
@@ -206,21 +206,6 @@ const Indicator = GObject.registerClass(
 export default class ExternalIPExtension extends Extension {
     constructor(metadata) {
         super(metadata);
-        this.disabled = false; 
-        this.timeout = 60 * 10; 
-        this.minTimeBetweenChecks = 4; 
-        this.networkEventRefreshTimeout = 4;
-        
-        this.isIdle = false;
-        this.lastCheck = 0;
-        this.locationIP = null;
-        
-        this.notification_msg_sources = new Set();
-        
-        this._httpSession = new Soup.Session(); 
-        this._httpSession.timeout = 8;
-        
-        this._settingsChangedId = 0;
     }
 
     lg(s) {
@@ -275,9 +260,9 @@ export default class ExternalIPExtension extends Extension {
                 body: msg
             });          
             
-            notification.connect('destroy', () => {
+            notification.connectObject('destroy', () => {
                 this.notification_msg_sources.delete(source);
-            });
+            }, this);
 
             source.addNotification(notification);
         } catch (e) {
@@ -355,12 +340,14 @@ export default class ExternalIPExtension extends Extension {
     }
 
     timer() {    
-        if (!this.disabled && !this.isIdle) {
-            this.sourceLoopID = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, this.timeout, () => {            
-                this.refreshIP().catch(e => this.lg(e));
-                return GLib.SOURCE_CONTINUE;
-            });
-        }    
+        if (this.sourceLoopID) {
+            GLib.Source.remove(this.sourceLoopID);
+            this.sourceLoopID = null;
+        }
+        this.sourceLoopID = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, this.timeout, () => {            
+            this.refreshIP().catch(e => this.lg(e));
+            return GLib.SOURCE_CONTINUE;
+        });
     }
 
     async _purgeCache(folderName, maxFiles = 20) {
@@ -461,24 +448,27 @@ export default class ExternalIPExtension extends Extension {
     }
 
     getIcon(fileName, isAbsolutePath=false) {
-        let path = isAbsolutePath ? fileName : this.dir.get_child('img').get_path() + '/' + fileName;
-        
-        let file = Gio.File.new_for_path(path);
-        if (!file.query_exists(null) && !isAbsolutePath) {
-             path = this.dir.get_child('img').get_path() + '/ip.svg';
-             file = Gio.File.new_for_path(path);
+        if (isAbsolutePath) {
+            let file = Gio.File.new_for_path(fileName);
+            if (file.query_exists(null)) {
+                return new Gio.FileIcon({ file });
+            }
         }
-        
-        return new Gio.FileIcon({ file });
+        return new Gio.ThemedIcon({ name: 'network-server-symbolic' });
     }
 
     _onNetworkStatusChanged(monitor, network_available) {        
-        if (network_available && !this.isIdle) {        
+        if (network_available) {        
             this.lg("Network event triggered. Scheduling rapid IP re-check.");
             
             if (this.networkEventRefreshLoopID) {
-                try { GLib.Source.remove(this.networkEventRefreshLoopID); } catch(e) {}
+                GLib.Source.remove(this.networkEventRefreshLoopID);
                 this.networkEventRefreshLoopID = null;
+            }
+            
+            if (this.rapidRefreshRetryID) {
+                GLib.Source.remove(this.rapidRefreshRetryID);
+                this.rapidRefreshRetryID = null;
             }
 
             let attempts = 0;
@@ -487,11 +477,19 @@ export default class ExternalIPExtension extends Extension {
                     if (!success && attempts < 5) {
                         attempts++;
                         this.lg(`Rapid refresh attempt ${attempts} failed. Retrying in 2s...`);
-                        this.networkEventRefreshLoopID = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 2, tryRefresh);
+                        
+                        if (this.rapidRefreshRetryID) {
+                            GLib.Source.remove(this.rapidRefreshRetryID);
+                            this.rapidRefreshRetryID = null;
+                        }
+                        
+                        this.rapidRefreshRetryID = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 2, tryRefresh);
                     } else {
-                        this.networkEventRefreshLoopID = null;
+                        this.rapidRefreshRetryID = null;
                     }
                 });
+                
+                this.networkEventRefreshLoopID = null;
                 return GLib.SOURCE_REMOVE;
             };
 
@@ -500,11 +498,19 @@ export default class ExternalIPExtension extends Extension {
     }
 
     enable() {
-        this.disabled = false;
+        this.timeout = 60 * 10; 
+        this.minTimeBetweenChecks = 4; 
+        this.networkEventRefreshTimeout = 4;
+        this.lastCheck = 0;
+        this.locationIP = null;
+        this.notification_msg_sources = new Set();
+        
         this.settings = this.getSettings();
         
+        this._httpSession = new Soup.Session(); 
+        this._httpSession.timeout = 8;
+        
         this.historyManager = new HistoryManager(this.dir, this);
-        this.popup_icon = this.getIcon("ip.svg");
 
         this._purgeCache('maps', 20);
         this._purgeCache('flags', 20);
@@ -516,11 +522,11 @@ export default class ExternalIPExtension extends Extension {
         Main.panel.addToStatusArea(this.uuid, this.panelButton, 0, 'right');    
         
         this.network_monitor = Gio.network_monitor_get_default();      
-        this.network_monitor_connection = this.network_monitor.connect('network-changed', this._onNetworkStatusChanged.bind(this));
+        this.network_monitor.connectObject('network-changed', this._onNetworkStatusChanged.bind(this), this);
 
-        this._settingsChangedId = this.settings.connect('changed', () => {
+        this.settings.connectObject('changed', () => {
             if (this.panelButton) this.panelButton.updateUI();
-        });
+        }, this);
 
         this.refreshIP();
         this.timer();
@@ -530,45 +536,51 @@ export default class ExternalIPExtension extends Extension {
 
     disable() {
         this.lg("Disabling Extension");
-        this.disabled = true;
-
-        if (this._settingsChangedId && this.settings) {
-            this.settings.disconnect(this._settingsChangedId);
-            this._settingsChangedId = 0;
+        
+        if (this.networkEventRefreshLoopID) {
+            GLib.Source.remove(this.networkEventRefreshLoopID);
+            this.networkEventRefreshLoopID = null;
         }
 
-        for (let source of this.notification_msg_sources) {
-            source.destroy();        
+        if (this.rapidRefreshRetryID) {
+            GLib.Source.remove(this.rapidRefreshRetryID);
+            this.rapidRefreshRetryID = null;
         }
-        this.notification_msg_sources.clear();
 
-        this.popup_icon = null;
+        if (this.sourceLoopID) {
+            GLib.Source.remove(this.sourceLoopID);
+            this.sourceLoopID = null;
+        }
+
+        if (this.settings) {
+            this.settings.disconnectObject(this);
+            this.settings = null;
+        }
+
+        if (this.notification_msg_sources) {
+            for (let source of this.notification_msg_sources) {
+                source.destroy();        
+            }
+            this.notification_msg_sources.clear();
+            this.notification_msg_sources = null;
+        }
 
         if (this.panelButton) {
             this.panelButton.destroy();
             this.panelButton = null;
         }
 
-        if (this.network_monitor && this.network_monitor_connection) {
-            this.network_monitor.disconnect(this.network_monitor_connection);
-            this.network_monitor_connection = null;
-        }
-
-        if (this.networkEventRefreshLoopID) {
-            try { GLib.Source.remove(this.networkEventRefreshLoopID); } catch(e) {}
-            this.networkEventRefreshLoopID = null;
-        }
-
-        if (this.sourceLoopID) {
-            try { GLib.Source.remove(this.sourceLoopID); } catch(e) {}
-            this.sourceLoopID = null;
+        if (this.network_monitor) {
+            this.network_monitor.disconnectObject(this);
+            this.network_monitor = null;
         }
         
         if (this._httpSession) {
             this._httpSession.abort();
+            this._httpSession = null;
         }
         
-        this.settings = null;
         this.historyManager = null;
+        this.locationIP = null;
     }
 }
