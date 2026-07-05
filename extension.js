@@ -76,14 +76,23 @@ const Indicator = GObject.registerClass(
             try {
                 if (!this.menu) return;
                 
+                let locIP = this.ext.locationIP;
+                if (!locIP) return;
+
+                // Pre-fetch all async resources to ensure the menu construction remains strictly synchronous
+                let flagURL = await this.ext.getCachedFlag(locIP.countryCode);
+                let mapUrl = null;
+                
+                if (locIP.latitude && locIP.longitude) {
+                    mapUrl = await this.ext.getCachedMap(locIP.latitude, locIP.longitude);
+                }
+
+                // Execute synchronous UI rebuild
                 this.menu.removeAll();
                 
                 let copyTextFunction = function(textToCopy) {
                     St.Clipboard.get_default().set_text(St.ClipboardType.CLIPBOARD, textToCopy);
                 };
-                
-                let locIP = this.ext.locationIP;
-                if (!locIP) return;
 
                 this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem("IP Addresses (Click to copy)"));
                 
@@ -120,19 +129,17 @@ const Indicator = GObject.registerClass(
                     this.menu.addMenuItem(tzBtn);               
                 }
 
-                let flagIcon = this.ext.getIcon(await this.ext.getCachedFlag(locIP.countryCode), true);
+                let flagIcon = this.ext.getIcon(flagURL, true);
                 let countryText = `${locIP.countryName} (${locIP.countryCode}), ${locIP.cityName}`;
                 let countryBtn = new PopupMenu.PopupImageMenuItem(countryText, flagIcon, {});
                 countryBtn.connectObject('activate', () => copyTextFunction(countryText), this);
                 this.menu.addMenuItem(countryBtn);
              
-                if (locIP.latitude && locIP.longitude) {
+                if (mapUrl) {
                     let mapImageBtn = new PopupMenu.PopupBaseMenuItem({
                         style_class: 'mapMenuItem',
                         reactive: true
                     });
-
-                    let mapUrl = await this.ext.getCachedMap(locIP.latitude, locIP.longitude);
 
                     let mapContainer = new St.Widget({
                         style: `background-image: url('file://${mapUrl}'); background-size: cover; border-radius: 8px;`,
