@@ -39,6 +39,23 @@ export default class ShowExternalIPPreferences extends ExtensionPreferences {
         // --- Panel Display Settings ---
         const groupDisplay = new Adw.PreferencesGroup({ title: 'Top Bar Display Options' });
 
+        const rowPosition = new Adw.ComboRow({
+            title: 'Panel Position',
+            subtitle: 'Where to display the indicator in the top bar',
+            model: Gtk.StringList.new(['Left', 'Center', 'Right'])
+        });
+        
+        let currentPos = settings.get_string('panel-position');
+        if (currentPos === 'left') rowPosition.selected = 0;
+        else if (currentPos === 'center') rowPosition.selected = 1;
+        else rowPosition.selected = 2; // right
+
+        rowPosition.connect('notify::selected', () => {
+            if (rowPosition.selected === 0) settings.set_string('panel-position', 'left');
+            else if (rowPosition.selected === 1) settings.set_string('panel-position', 'center');
+            else settings.set_string('panel-position', 'right');
+        });
+
         const rowTitleMode = new Adw.ComboRow({
             title: 'Information to Show',
             subtitle: 'Choose what is displayed in the GNOME panel',
@@ -103,6 +120,7 @@ export default class ShowExternalIPPreferences extends ExtensionPreferences {
         settings.bind('show-notifications', switchNotifications, 'active', Gio.SettingsBindFlags.DEFAULT);
         rowNotifications.add_suffix(switchNotifications);
 
+        groupDisplay.add(wrap(rowPosition));
         groupDisplay.add(wrap(rowTitleMode));
         groupDisplay.add(wrap(rowPriority));
         groupDisplay.add(wrap(rowMapProvider));
@@ -143,7 +161,7 @@ export default class ShowExternalIPPreferences extends ExtensionPreferences {
 
         // --- Support & Links Group ---
         const groupLinks = new Adw.PreferencesGroup();
-
+        
         const linkBox = new Gtk.Box({
             orientation: Gtk.Orientation.HORIZONTAL,
             spacing: 12,

@@ -2,6 +2,12 @@
 <schemalist>
   <schema id="org.gnome.shell.extensions.show-external-ip" path="/org/gnome/shell/extensions/show-external-ip/">
     
+    <key name="panel-position" type="s">
+      <default>'right'</default>
+      <summary>Panel Position</summary>
+      <description>Where to place the extension in the top panel (left, center, right)</description>
+    </key>
+    
     <key name="ip-version-priority" type="s">
       <default>'ipv4'</default>
       <summary>Preferred IP Version to Display</summary>
@@ -11,13 +17,13 @@
       <default>'ip'</default>
       <summary>Information to show in panel</summary>
     </key>
-
+    
     <key name="map-provider" type="s">
       <default>'google'</default>
       <summary>Map Provider</summary>
       <description>Service to open when clicking the map</description>
     </key>
-
+    
     <key name="show-notifications" type="b">
       <default>true</default>
       <summary>Enable Notifications</summary>
@@ -28,6 +34,6 @@
       <default>false</default>
       <summary>Enable Debug Logging</summary>
     </key>
-
+    
   </schema>
 </schemalist>

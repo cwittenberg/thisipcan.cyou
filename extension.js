@@ -29,15 +29,15 @@ const Indicator = GObject.registerClass(
             super._init(0.5, ext.metadata.name);
             this.ext = ext;
             
-            this.btn = new St.Button();            
+            this.btn = new St.Button();
             this.btn.set_style_class_name("notifyIcon");
             
             this.btn.reactive = false; 
             
             this.updateUI().catch(e => this.ext.lg(e));
 
-            this.add_child(this.btn);                        
-        }        
+            this.add_child(this.btn);
+        }
 
         async updateUI() {
             let locIP = this.ext.locationIP;
@@ -46,7 +46,7 @@ const Indicator = GObject.registerClass(
                 return;
             }
 
-            let flagURL = await this.ext.getCachedFlag(locIP.countryCode);            
+            let flagURL = await this.ext.getCachedFlag(locIP.countryCode);
             this.btn.set_style(`background-image: url("file://${flagURL}");`);
 
             let displayMode = this.ext.settings.get_string('title-display-mode');
@@ -72,13 +72,13 @@ const Indicator = GObject.registerClass(
             await this._rebuildMenu();
         }
 
-        async _rebuildMenu() {            
+        async _rebuildMenu() {
             try {
                 if (!this.menu) return;
                 
-                this.menu.removeAll();                        
-            
-                let copyTextFunction = function(textToCopy) {                                
+                this.menu.removeAll();
+                
+                let copyTextFunction = function(textToCopy) {
                     St.Clipboard.get_default().set_text(St.ClipboardType.CLIPBOARD, textToCopy);
                 };
                 
@@ -111,21 +111,21 @@ const Indicator = GObject.registerClass(
                     let orgText = locIP.org ? locIP.org : locIP.asn;
                     let orgBtn = new PopupMenu.PopupImageMenuItem(orgText, 'emblem-shared-symbolic', {});
                     orgBtn.connectObject('activate', () => copyTextFunction(orgText), this);
-                    this.menu.addMenuItem(orgBtn);           
+                    this.menu.addMenuItem(orgBtn);               
                 }
 
-                if (locIP.timezone) {           
+                if (locIP.timezone) {                   
                     let tzBtn = new PopupMenu.PopupImageMenuItem(locIP.timezone, 'preferences-system-time-symbolic', {});
                     tzBtn.connectObject('activate', () => copyTextFunction(locIP.timezone), this);
-                    this.menu.addMenuItem(tzBtn);           
+                    this.menu.addMenuItem(tzBtn);               
                 }
 
                 let flagIcon = this.ext.getIcon(await this.ext.getCachedFlag(locIP.countryCode), true);
                 let countryText = `${locIP.countryName} (${locIP.countryCode}), ${locIP.cityName}`;
                 let countryBtn = new PopupMenu.PopupImageMenuItem(countryText, flagIcon, {});
                 countryBtn.connectObject('activate', () => copyTextFunction(countryText), this);
-                this.menu.addMenuItem(countryBtn);         
-
+                this.menu.addMenuItem(countryBtn);
+             
                 if (locIP.latitude && locIP.longitude) {
                     let mapImageBtn = new PopupMenu.PopupBaseMenuItem({
                         style_class: 'mapMenuItem',
@@ -195,7 +195,7 @@ const Indicator = GObject.registerClass(
                     this.ext.openPreferences();
                 }, this);
                 this.menu.addMenuItem(settingsItem);
-                
+                 
             } catch (err) {
                 this.ext.lg(`Error in _rebuildMenu: ${err}`);
             }
@@ -258,7 +258,7 @@ export default class ExternalIPExtension extends Extension {
                 source: source,
                 title: title,
                 body: msg
-            });          
+            });
             
             notification.connectObject('destroy', () => {
                 this.notification_msg_sources.delete(source);
@@ -288,8 +288,8 @@ export default class ExternalIPExtension extends Extension {
             this.httpRequest(extIpServiceGeo),
             this.httpRequest(extIpServiceV4),
             this.httpRequest(extIpServiceV6)
-        ]);       
-
+        ]);
+       
         if (!geoResp) { 
             this.lg("Null response received from primary API");
             return false;
@@ -329,7 +329,7 @@ export default class ExternalIPExtension extends Extension {
 
             this.lg(`Resolved IPs -> v4: ${this.locationIP.ipv4}, v6: ${this.locationIP.ipv6}`);
 
-            if (this.panelButton) {            
+            if (this.panelButton) {                
                 await this.panelButton.updateUI();
             }
             return true;
@@ -403,7 +403,7 @@ export default class ExternalIPExtension extends Extension {
         let x = Math.floor((lon + 180) / 360 * Math.pow(2, zoom));
         let latRad = lat * Math.PI / 180;
         let y = Math.floor((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * Math.pow(2, zoom));
-
+        
         let mapFileDestination = mapsDir.get_path() + `/${lat}_${lon}_${zoom}.png`;
         let file = Gio.File.new_for_path(mapFileDestination);
 
@@ -457,8 +457,8 @@ export default class ExternalIPExtension extends Extension {
         return new Gio.ThemedIcon({ name: 'network-server-symbolic' });
     }
 
-    _onNetworkStatusChanged(monitor, network_available) {        
-        if (network_available) {        
+    _onNetworkStatusChanged(monitor, network_available) {
+        if (network_available) {
             this.lg("Network event triggered. Scheduling rapid IP re-check.");
             
             if (this.networkEventRefreshLoopID) {
@@ -497,6 +497,22 @@ export default class ExternalIPExtension extends Extension {
         }
     }
 
+    _setupIndicator() {
+        if (this.panelButton) {
+            this.panelButton.destroy();
+            this.panelButton = null;
+        }
+
+        this.panelButton = new Indicator(this);
+        let position = 'right';
+        
+        if (this.settings) {
+            position = this.settings.get_string('panel-position') || 'right';
+        }
+        
+        Main.panel.addToStatusArea(this.uuid, this.panelButton, 0, position);
+    }
+
     enable() {
         this.timeout = 60 * 10; 
         this.minTimeBetweenChecks = 4; 
@@ -515,18 +531,17 @@ export default class ExternalIPExtension extends Extension {
         this._purgeCache('maps', 20);
         this._purgeCache('flags', 20);
 
-        if (!this.panelButton) {
-            this.panelButton = new Indicator(this);
-        }
-        
-        Main.panel.addToStatusArea(this.uuid, this.panelButton, 0, 'right');    
-        
+        this._setupIndicator();
+            
         this.network_monitor = Gio.network_monitor_get_default();      
         this.network_monitor.connectObject('network-changed', this._onNetworkStatusChanged.bind(this), this);
 
-        this.settings.connectObject('changed', () => {
-            if (this.panelButton) this.panelButton.updateUI();
-        }, this);
+        this.settings.connectObject(
+            'changed::panel-position', this._setupIndicator.bind(this),
+            'changed', () => {
+                if (this.panelButton) this.panelButton.updateUI();
+            }, this
+        );
 
         this.refreshIP();
         this.timer();
@@ -559,7 +574,7 @@ export default class ExternalIPExtension extends Extension {
 
         if (this.notification_msg_sources) {
             for (let source of this.notification_msg_sources) {
-                source.destroy();        
+                source.destroy();    
             }
             this.notification_msg_sources.clear();
             this.notification_msg_sources = null;
