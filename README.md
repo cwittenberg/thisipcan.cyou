@@ -1,4 +1,4 @@
-# Show External IP (thisipcan.cyou) GNOME extension
+# Show External IP GNOME extension
 This GNOME extension displays your external IP in the Toolbar and sends a system notification if changed.
 
 - See your public IP in the tray bar, including country flag (of the active public IP)
