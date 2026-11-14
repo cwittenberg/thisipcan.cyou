@@ -362,7 +362,7 @@ export default class ExternalIPExtension extends Extension {
             let dir = this.dir.get_child(folderName);
             if (!dir.query_exists(null)) return;
 
-            dir.enumerate_children_async('standard::*', Gio.FileQueryInfoFlags.NONE, GLib.PRIORITY_DEFAULT, null, (source, res) => {
+            dir.enumerate_children_async('standard::*,time::modified,time::modified-usec', Gio.FileQueryInfoFlags.NONE, GLib.PRIORITY_DEFAULT, null, (source, res) => {
                 try {
                     let enumerator = source.enumerate_children_finish(res);
                     let files = [];
@@ -382,10 +382,11 @@ export default class ExternalIPExtension extends Extension {
                                 return;
                             }
                             for (let info of infos) {
-                                if (info.get_file_type() === Gio.FileType.REGULAR) {
+                                let modificationTime = info.get_modification_date_time();
+                                if (info.get_file_type() === Gio.FileType.REGULAR && modificationTime) {
                                     files.push({
                                         file: dir.get_child(info.get_name()),
-                                        time: info.get_modification_date_time().to_unix()
+                                        time: modificationTime.to_unix()
                                     });
                                 }
                             }
